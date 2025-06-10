@@ -9,7 +9,8 @@ from tqdm import tqdm
 import inspect
 import os
 
-PRETRAIN_MODEL = "cartpole_classifier_state_dict_nuisance.pth"
+PRETRAIN_MODEL = "./classifier/random-windows/cartpole_classifier_state_dict_nuisance.pth"
+DATASET_PATH = "data/random-windows/cartpole_nuisance.npz"
 # ====================== CONSTANT CONFIG ======================
 CONFIG = {
     # Training parameters
@@ -71,7 +72,6 @@ class NuisanceGenerator(nn.Module):
         delta = self.net(x_perm).permute(0, 2, 1)
         return x + delta * 0.1
 
-
 class NuisanceLoss(nn.Module):
     def __init__(self, f, generator,
                  beta=1.0, lambda_min=0.1, eta=0.01, rho=0.01):
@@ -125,6 +125,95 @@ class NuisanceLoss(nn.Module):
             'minimal': L_min,
             'mag': L_mag,
             'tv': L_tv
+        }
+
+
+class SimpleNuisanceLoss(nn.Module):
+    """
+    A minimal loss for learning label-preserving nuisance removal.
+
+    Args
+    ----
+    f              : frozen classifier  f(x) -> logits / probs
+    generator      : g_\phi network (needed for minimality)
+    alpha_consist  : weight on consistency          (default 1.0)
+    beta_cover     : weight on reconstruction/cover (default 1.0)
+    lambda_min     : weight on parameter sparsity   (default 0.05)
+    eta_mag        : weight on residual magnitude   (default 0.1)
+    use_tv         : include TV smoothness term?    (bool)
+    use_identity   : include identity loss on clean inputs? (bool)
+    """
+    def __init__(self, f, generator,
+                 alpha_consist=1.0, beta_cover=1.0,
+                 lambda_min=0.05, eta_mag=0.1,
+                 use_tv=False, tv_weight=0.01,
+                 use_identity=False, id_weight=0.1):
+        super().__init__()
+        self.f       = f
+        self.g       = generator
+        self.ac      = alpha_consist
+        self.bc      = beta_cover
+        self.lm      = lambda_min
+        self.em      = eta_mag
+        self.use_tv  = use_tv
+        self.tv_w    = tv_weight
+        self.use_id  = use_identity
+        self.id_w    = id_weight
+
+    # ---------- helpers ----------
+    @staticmethod
+    def _bounded_mse(a, b, scale=10.0):
+        """MSE squashed to (0,1) via sigmoid."""
+        return torch.sigmoid(scale * F.mse_loss(a, b))
+
+    def forward(self, x_noisy, x_clean, g_x):
+        """
+        x_noisy : corrupted input  x'
+        x_clean : reference clean input  x   (can be same as x_noisy if not available)
+        g_x     : output of generator g(x')
+        """
+        # 1. Consistency (classifier invariant)
+        cons_raw = 1.0 - F.cosine_similarity(self.f(x_noisy), self.f(g_x), dim=1).mean()
+        L_consist = torch.clamp(cons_raw / 2.0, 0., 1.)
+
+        # 2. Reconstruction / Coverage in *input* space
+        L_cover = self._bounded_mse(g_x, x_clean)
+
+        # 3. Residual magnitude (encourage minimal edits)
+        L_mag   = self._bounded_mse(g_x, x_noisy, scale=10.0)
+
+        # 4. Minimality (parameter L1)
+        L_min   = torch.stack([p.abs().mean() for p in self.g.parameters()]).mean()
+        L_min   = torch.clamp(L_min, 0., 1.)
+
+        # Optional TV smoothness along time axis
+        L_tv = 0.
+        if self.use_tv and g_x.ndim == 3:              # (B, T, C)
+            L_tv = self._bounded_mse(g_x[:,1:], g_x[:,:-1], scale=10.0)
+
+        # Optional identity loss (make g(x)≈x on already-clean inputs)
+        L_id = 0.
+        if self.use_id:
+            L_id = self._bounded_mse(self.g(x_clean), x_clean, scale=10.0)
+
+        # ----- Total -----
+        total_weight = self.ac + self.bc + self.em + self.lm + self.tv_w + self.id_w
+        total = (self.ac * L_consist +
+                 self.bc * L_cover +
+                 self.em * L_mag +
+                 self.lm * L_min +
+                 self.tv_w * L_tv +
+                 self.id_w * L_id)
+
+        total /= total_weight
+
+        return total, {
+            "consist": L_consist,
+            "cover"  : L_cover,
+            "mag"    : L_mag,
+            "min"    : L_min,
+            "tv"     : L_tv,
+            "id"     : L_id
         }
 
 class DepthwiseNuisanceGenerator(nn.Module):
@@ -191,13 +280,13 @@ def train_generator():
 
     # Models
     classifier = CartPoleClassifier()  # Recreate the model architecture first
-    classifier.load_state_dict(torch.load("./classifier/cartpole_classifier_state_dict_nuisance.pth"))
+    classifier.load_state_dict(torch.load(PRETRAIN_MODEL))
     classifier.eval()
 
     generator = DepthwiseNuisanceGenerator().to(device)
 
     # Data
-    dataset = CartPoleDataset('./data/cartpole_time_series_dataset_nuisance.npz')
+    dataset = CartPoleDataset(DATASET_PATH)
     train_size = int(0.8 * len(dataset))
     train_data, val_data = random_split(dataset, [train_size, len(dataset) - train_size])
     train_loader = DataLoader(train_data, batch_size=CONFIG['batch_size'], shuffle=True)
@@ -206,14 +295,7 @@ def train_generator():
     # Optimization
     optimizer = optim.Adam(generator.parameters(), lr=CONFIG['lr'])
     # Use the improved loss
-    """
-    criterion = NuisanceLoss(
-        classifier,
-        beta=CONFIG['beta'],
-        lambda_min=CONFIG['lambda_min'],
-        eta=CONFIG['eta'],
-        rho=CONFIG['rho']
-    )
+
     """
 
     criterion = NuisanceLoss(
@@ -222,6 +304,14 @@ def train_generator():
         lambda_min=CONFIG['lambda_min'],
         eta=CONFIG['eta'],
         rho=CONFIG['rho']
+    )
+    """
+
+    criterion = SimpleNuisanceLoss(
+        f=classifier, generator=generator,
+        beta_cover=1.0, eta_mag=0.2,
+        lambda_min=0.05,
+        use_tv=False, use_identity=True, id_weight=0.1
     )
 
     # Tracking
@@ -293,7 +383,7 @@ if __name__ == '__main__':
     G, history, config = train_generator()
 
     # Save
-    save_path = './generator/nuisance_transformations_b.pth'
+    save_path = './generator/nuisance_transformations_basic.pth'
 
     torch.save({
         'state_dict': G.state_dict(),

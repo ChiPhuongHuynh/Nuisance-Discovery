@@ -7,7 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 # Load dataset
-data = np.load("./data/cartpole_time_series_dataset_nuisance.npz")
+data = np.load("./data/random-windows/cartpole_cleaned_by_generator.npz")
 x_data, y_labels = data["x"], data["y"]
 
 # Convert to PyTorch tensors
@@ -108,4 +108,4 @@ with torch.no_grad():
 
 print(f"Test Accuracy: {test_correct/len(test_dataset):.4f}")
 # Save
-torch.save(model.state_dict(), "./classifier/cartpole_classifier_state_dict_nuisance.pth")
+torch.save(model.state_dict(), "./classifier/random-windows/cartpole_classifier_retrain.pth")
