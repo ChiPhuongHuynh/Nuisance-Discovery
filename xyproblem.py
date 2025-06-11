@@ -9,8 +9,8 @@ N = 1_000
 torch.manual_seed(0)
 x = torch.rand(N, 1) * 2 - 1          # x ∈ [−1, 1]
 y = torch.rand(N, 1) * 2 - 1          # y ∈ [−1, 1]
-clean   = torch.cat([x, y], dim=1)    # (N, 2)
-labels  = (x >= y).float()            # 1 if x ≥ y else 0
+clean = torch.cat([x, y], dim=1)    # (N, 2)
+labels = (x >= y).float()            # 1 if x ≥ y else 0
 
 # ----------------------------
 # 2.  Inject nuisances (bias & scale)
@@ -49,8 +49,8 @@ g = Generator()
 # ----------------------------
 # 5.  Training (reconstruction + consistency)
 # ----------------------------
-opt      = optim.Adam(g.parameters(), lr=1e-3)
-mse      = nn.MSELoss()
+opt = optim.Adam(g.parameters(), lr=1e-3)
+mse = nn.MSELoss()
 
 def train(num_epochs=500):
     for ep in range(num_epochs):

@@ -11,7 +11,7 @@ import os
 
 PRETRAIN_MODEL = "./classifier/random-windows/cartpole_classifier_state_dict_nuisance.pth"
 DATASET_PATH = "data/random-windows/cartpole_nuisance.npz"
-# ====================== CONSTANT CONFIG ======================
+
 CONFIG = {
     # Training parameters
     'batch_size': 32,
@@ -48,7 +48,7 @@ class CartPoleClassifier(nn.Module):
         x = self.relu(self.fc1(x))
         x = self.sigmoid(self.fc2(x))
         return x
-# ====================== MODEL DEFINITIONS ======================
+
 class NuisanceGenerator(nn.Module):
     def __init__(self, input_dim=4, seq_len=50):
         super().__init__()
@@ -88,24 +88,24 @@ class NuisanceLoss(nn.Module):
         f_x1 = self.f(x1)
         f_gx1 = self.f(g_x1)
 
-        # ----- 1. Consistency Loss (bounded cosine similarity) -----
+        # 1. Consistency Loss (bounded cosine similarity)
         cos_sim = F.cosine_similarity(f_x1, f_gx1, dim=1)
         L_consist = 1.0 - cos_sim.mean()  # In [0, 2] → then scale
         L_consist = torch.clamp(L_consist / 2.0, 0, 1)
 
-        # ----- 2. Coverage Loss (optional, relaxed) -----
+        # 2. Coverage Loss (optional, relaxed)
         # distance in embedding space as a soft proxy
         L_cover = torch.clamp(F.mse_loss(f_gx1, self.f(x2)), 0, 1)
 
-        # ----- 3. Minimality Loss (generator param sparsity) -----
+        # 3. Minimality Loss (generator param sparsity)
         L_min = torch.stack([p.abs().mean() for p in self.g.parameters()]).mean()
         L_min = torch.clamp(L_min, 0, 1)
 
-        # ----- 4. Magnitude Loss (small perturbations) -----
+        # 4. Magnitude Loss (small perturbations)
         L_mag = F.mse_loss(g_x1, x1)
         L_mag = torch.clamp(L_mag * 10, 0, 1)  # scale up small values for range
 
-        # ----- 5. Temporal Smoothness (TV loss) -----
+        # 5. Temporal Smoothness (TV loss)
         L_tv = ((g_x1[:, 1:] - g_x1[:, :-1]) ** 2).mean()
         L_tv = torch.clamp(L_tv * 10, 0, 1)
 
@@ -160,7 +160,7 @@ class SimpleNuisanceLoss(nn.Module):
         self.use_id  = use_identity
         self.id_w    = id_weight
 
-    # ---------- helpers ----------
+
     @staticmethod
     def _bounded_mse(a, b, scale=10.0):
         """MSE squashed to (0,1) via sigmoid."""
@@ -252,7 +252,7 @@ class DepthwiseNuisanceGenerator(nn.Module):
         out = out.permute(0, 2, 1)      # (B, T, D)
         return x.permute(0, 2, 1) + out  # Residual connection
 
-# ====================== DATA LOADING ======================
+
 class CartPoleDataset(Dataset):
     def __init__(self, data_path):
         data = np.load(data_path)
@@ -272,7 +272,7 @@ class CartPoleDataset(Dataset):
         return x1, self.x[idx2], y
 
 
-# ====================== TRAINING LOOP ======================
+
 def train_generator():
     # Initialize
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -373,7 +373,6 @@ def train_generator():
     return generator, history, CONFIG
 
 
-# ====================== MAIN EXECUTION ======================
 if __name__ == '__main__':
     # Verify files
     #assert os.path.exists('cartpole_time_series_dataset.npz'), "Missing dataset file"

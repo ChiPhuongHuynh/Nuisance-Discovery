@@ -3,14 +3,14 @@ import numpy as np
 from tqdm import tqdm
 
 # ---------- CONFIG ----------
-NUM_EPISODES        = 1000
-WINDOW_SIZE         = 50
+NUM_EPISODES = 1000
+WINDOW_SIZE = 50
 WINDOWS_PER_EPISODE = 2
-SAVE_NOISY_PATH     = "data/random-windows/cartpole_nuisance.npz"
-SAVE_CLEAN_PATH     = "data/random-windows/cartpole_clean.npz"
-SAVE_LOG_PATH       = "data/random-windows/cartpole_window_log.npy"
-SUCCESS_LEN         = 500
-TAIL_BIAS_ALPHA     = 4.0   # Beta(alpha, 1) → skew toward episode end
+SAVE_NOISY_PATH = "data/random-windows/cartpole_nuisance.npz"
+SAVE_CLEAN_PATH = "data/random-windows/cartpole_clean.npz"
+SAVE_LOG_PATH = "data/random-windows/cartpole_window_log.npy"
+SUCCESS_LEN = 500
+TAIL_BIAS_ALPHA = 4.0   # Beta(alpha, 1) → skew toward episode end
 
 # ---------- Heuristic Policy ----------
 def get_action(obs, rng):
@@ -70,7 +70,7 @@ for ep in tqdm(range(NUM_EPISODES)):
     for _ in range(WINDOWS_PER_EPISODE):
         start = sample_tail_biased_start(len(traj), WINDOW_SIZE, rng, alpha=TAIL_BIAS_ALPHA)
         seg_clean = traj_clean[start:start + WINDOW_SIZE]
-        seg_nuis  = traj_nuis[start:start + WINDOW_SIZE]
+        seg_nuis = traj_nuis[start:start + WINDOW_SIZE]
         x_clean.append(seg_clean)
         x_noisy.append(seg_nuis)
         labels.append(label)
@@ -84,7 +84,7 @@ for ep in tqdm(range(NUM_EPISODES)):
 # ---------- Save ----------
 x_noisy = np.array(x_noisy)
 x_clean = np.array(x_clean)
-labels  = np.array(labels)
+labels = np.array(labels)
 
 np.savez(SAVE_NOISY_PATH, x=x_noisy, y=labels)
 np.savez(SAVE_CLEAN_PATH, x_clean=x_clean, y=labels)

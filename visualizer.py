@@ -1,14 +1,7 @@
-"""
-viz_generator_effects.py
-------------------------
-Quick visual diagnostics for a trained nuisance generator g_φ.
-"""
-
 import numpy as np
 import torch, torch.nn as nn
 import matplotlib.pyplot as plt
 
-# ========== PATHS ==========
 NOISY_PATH = "data/random-windows/cartpole_nuisance.npz"          # x', y
 CLEAN_PATH = "data/random-windows/cartpole_clean.npz"    # optional x (ground-truth clean)
 GEN_PATH = "generator/nuisance_transformations_basic.pth"
@@ -16,7 +9,6 @@ GEN_PATH = "generator/nuisance_transformations_basic.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RNG = np.random.default_rng(0)
 
-# ========== LOAD DATA ==========
 noisy_data = np.load(NOISY_PATH)
 x_noisy = torch.tensor(noisy_data["x"], dtype=torch.float32)  # (N, 50, 4)
 y = noisy_data["y"]
@@ -29,14 +21,12 @@ try:
 except FileNotFoundError:
     print("⚠️ No ground-truth clean file found — will plot only noisy & cleaned")
 
-# ========== LOAD GENERATOR ==========
 from ntgenerator import DepthwiseNuisanceGenerator     # adjust import path if needed
 g = DepthwiseNuisanceGenerator().to(DEVICE)
 checkpoint = torch.load(GEN_PATH, map_location=DEVICE)
 g.load_state_dict(checkpoint["state_dict"])
 g.eval()
 
-# ========== PICK RANDOM SAMPLES ==========
 NUM_SAMPLES = 3
 idxs = RNG.choice(len(x_noisy), size=NUM_SAMPLES, replace=False)
 batch_noisy = x_noisy[idxs].to(DEVICE)                 # (k, 50, 4)
@@ -44,7 +34,6 @@ batch_noisy = x_noisy[idxs].to(DEVICE)                 # (k, 50, 4)
 with torch.no_grad():
     batch_cleaned = g(batch_noisy).cpu()               # (k, 50, 4)
 
-# ========== PLOT TIME-SERIES OVERLAY ==========
 feature_names = ["cart pos", "cart vel", "pole angle", "pole ang vel"]
 for k in range(NUM_SAMPLES):
     plt.figure(figsize=(12, 3))
@@ -60,8 +49,7 @@ for k in range(NUM_SAMPLES):
         plt.legend(loc="upper center", bbox_to_anchor=(1.1,1.0))
     plt.tight_layout(); plt.show()
 
-# ========== SCATTER (pole angle vs. pole ang-vel) ==========
-feat_x, feat_y = 2, 3   # change if you want a different pair
+feat_x, feat_y = 2, 3
 plt.figure(figsize=(5,5))
 plt.scatter(batch_noisy[:, :, feat_x].flatten(),
             batch_noisy[:, :, feat_y].flatten(),
@@ -77,8 +65,6 @@ plt.xlabel(feature_names[feat_x]); plt.ylabel(feature_names[feat_y])
 plt.title("Feature scatter before/after cleaning")
 plt.legend(); plt.gca().set_aspect("equal"); plt.show()
 
-# ========== NUMERICAL DIAGNOSTIC ==========
-# Compute per-window MSE vs. ground-truth if available
 if has_clean:
     mse_noisy = ((x_noisy[idxs] - x_clean[idxs]) ** 2).mean(dim=[1,2])
     mse_cleaned = ((batch_cleaned - x_clean[idxs]) ** 2).mean(dim=[1,2])
