@@ -2,6 +2,10 @@ import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
+"""
+Data generator that simultaneously add nuisance along one dimension of data in the Cartpole problem.
+"""
+
 # ---------- CONFIG ----------
 NUM_EPISODES = 1000
 WINDOW_SIZE = 50

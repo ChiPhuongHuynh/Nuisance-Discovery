@@ -8,7 +8,9 @@ import dill
 from tqdm import tqdm
 import inspect
 import os
-
+"""
+Basic generator training with fixed loss weights and static learning rates, useful for simple examples
+"""
 PRETRAIN_MODEL = "./classifier/random-windows/cartpole_classifier_state_dict_nuisance.pth"
 DATASET_PATH = "data/random-windows/cartpole_nuisance.npz"
 
@@ -382,7 +384,7 @@ if __name__ == '__main__':
     G, history, config = train_generator()
 
     # Save
-    save_path = './generator/nuisance_transformations_basic.pth'
+    save_path = 'model/generator/nuisance_transformations_basic.pth'
 
     torch.save({
         'state_dict': G.state_dict(),

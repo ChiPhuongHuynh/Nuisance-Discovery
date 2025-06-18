@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 # ---------- CONFIG ----------
 INPUT_PATH = "data/random-windows/cartpole_nuisance.npz"
-GEN_PATH = "generator/nuisance_transformations.pth"
+GEN_PATH = "model/generator/nuisance_transformations.pth"
 OUTPUT_PATH = "data/random-windows/cartpole_cleaned_by_generator.npz"
 BATCH_SIZE = 1024
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

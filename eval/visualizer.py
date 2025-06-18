@@ -2,9 +2,13 @@ import numpy as np
 import torch, torch.nn as nn
 import matplotlib.pyplot as plt
 
-NOISY_PATH = "data/random-windows/cartpole_nuisance.npz"          # x', y
-CLEAN_PATH = "data/random-windows/cartpole_clean.npz"    # optional x (ground-truth clean)
-GEN_PATH = "generator/nuisance_transformations_basic.pth"
+"""
+Visualize the features before and after applying nuisance transformations.
+"""
+
+NOISY_PATH = "../data/random-windows/cartpole_nuisance.npz"  # x', y
+CLEAN_PATH = "../data/random-windows/cartpole_clean.npz"  # optional x (ground-truth clean)
+GEN_PATH = "../model/generator/nuisance_transformations_basic.pth"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RNG = np.random.default_rng(0)

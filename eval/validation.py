@@ -4,6 +4,10 @@ from torch.utils.data import TensorDataset, DataLoader
 import torch.nn.functional as F
 import torch.nn as nn
 
+"""
+Calculates the validation metrics after the generator is trained.
+"""
+
 class CartPoleClassifier(nn.Module):
     def __init__(self, input_size=50, input_channels=4):
         super().__init__()
