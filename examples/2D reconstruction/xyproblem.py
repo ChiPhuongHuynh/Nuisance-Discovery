@@ -84,29 +84,43 @@ print("Mean ± Std distance  restored  → clean : "
 # ---------- plots ----------
 fig, axs = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
 
-def add_boundary(ax, data):
-    rng = [data[:,0].min(), data[:,0].max(), data[:,1].min(), data[:,1].max()]
-    lo = min(rng); hi = max(rng)
-    ax.plot([lo, hi], [lo, hi], 'k--', lw=1)   # x = y line
+
+def color_points(ax, data):
+    # Separate points where x >= y
+    purple_mask = data[:, 0] >= data[:, 1]
+    yellow_mask = ~purple_mask
+
+    # Plot purple points (x >= y)
+    ax.scatter(data[purple_mask, 0], data[purple_mask, 1], s=5, alpha=0.5, color='purple')
+    # Plot yellow points (x < y)
+    ax.scatter(data[yellow_mask, 0], data[yellow_mask, 1], s=5, alpha=0.5, color='orange')
+
+    # Set equal aspect ratio
+    rng = [data[:, 0].min(), data[:, 0].max(), data[:, 1].min(), data[:, 1].max()]
+    lo = min(rng);
+    hi = max(rng)
+    ax.set_xlim(lo, hi);
+    ax.set_ylim(lo, hi)
     ax.set_aspect('equal')
 
+
 # Clean
-axs[0].scatter(clean_np[:,0], clean_np[:,1], s=5, alpha=0.5)
+color_points(axs[0], clean_np)
 axs[0].set_title("Clean Data")
-axs[0].set_xlabel("x"); axs[0].set_ylabel("y")
-add_boundary(axs[0], clean_np)
+axs[0].set_xlabel("x");
+axs[0].set_ylabel("y")
 
 # Corrupted
-axs[1].scatter(corr_np[:,0], corr_np[:,1], s=5, alpha=0.5, color='orange')
+color_points(axs[1], corr_np)
 axs[1].set_title("Corrupted Data")
-axs[1].set_xlabel("x′"); axs[1].set_ylabel("y′")
-add_boundary(axs[1], corr_np)
+axs[1].set_xlabel("x′");
+axs[1].set_ylabel("y′")
 
 # Restored
-axs[2].scatter(restored_np[:,0], restored_np[:,1], s=5, alpha=0.5, color='green')
+color_points(axs[2], restored_np)
 axs[2].set_title("Restored by $g_\\phi(x')$")
-axs[2].set_xlabel("x̂"); axs[2].set_ylabel("ŷ")
-add_boundary(axs[2], restored_np)
+axs[2].set_xlabel("x̂");
+axs[2].set_ylabel("ŷ")
 
-plt.suptitle("2-D Toy Problem — Decision Boundary $x=y$ and Nuisance Removal", y=1.05, fontsize=14)
+plt.suptitle("2-D Toy Problem — Colored by x ≥ y Condition", y=1.05, fontsize=14)
 plt.show()

@@ -10,9 +10,9 @@ Data generator that simultaneously add nuisance along one dimension of data in t
 NUM_EPISODES = 1000
 WINDOW_SIZE = 50
 WINDOWS_PER_EPISODE = 2
-SAVE_NOISY_PATH = "data/random-windows/cartpole_nuisance.npz"
-SAVE_CLEAN_PATH = "data/random-windows/cartpole_clean.npz"
-SAVE_LOG_PATH = "data/random-windows/cartpole_window_log.npy"
+SAVE_NOISY_PATH = "data/random-windows/cartpole_2_intense_nuisance.npz"
+SAVE_CLEAN_PATH = "data/random-windows/cartpole_2_clean.npz"
+SAVE_LOG_PATH = "data/random-windows/cartpole_2_window_log.npy"
 SUCCESS_LEN = 500
 TAIL_BIAS_ALPHA = 4.0   # Beta(alpha, 1) → skew toward episode end
 
@@ -27,11 +27,15 @@ def get_action(obs, rng):
 def apply_nuisance(traj, rng):
     dim = int(rng.integers(0, 4))
     if rng.random() < 0.5:
-        bias = rng.uniform(-0.5, 0.5)
+        # bias = rng.uniform(-0.5, 0.5)
+        # Larger additive bias
+        bias = rng.uniform(-1.5, 1.5)  # ⬅️ increased range
         traj[:, dim] += bias
         return traj, {"kind": "bias", "dim": dim, "param": float(bias)}
     else:
-        scale = rng.uniform(0.7, 1.3)
+        # scale = rng.uniform(0.7, 1.3)
+        # More aggressive scaling
+        scale = rng.uniform(0.4, 1.6)  # ⬅️ wider scale range
         traj[:, dim] *= scale
         return traj, {"kind": "scale", "dim": dim, "param": float(scale)}
 
