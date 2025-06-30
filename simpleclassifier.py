@@ -5,9 +5,10 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 import numpy as np
 from tqdm import tqdm
-
+import matplotlib.pyplot as plt
+#import torch.nn.functional as F
 # Load dataset
-data = np.load("./data/random-windows/cartpole_2_intense_nuisance.npz")
+data = np.load("./data/scenario-based/cartpole_realistic_nuisance.npz")
 x_data, y_labels = data["x"], data["y"]
 
 # Convert to PyTorch tensors
@@ -33,47 +34,121 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size)
 test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-class CartPoleClassifier(nn.Module):
+class CartPoleClassifier2(nn.Module):
     def __init__(self, input_size=50, input_channels=4):
         super().__init__()
-        self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=5, padding=2)
-        self.pool = nn.MaxPool1d(2)
-        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
-        self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(64 * (input_size // 2), 64)
-        self.fc2 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
-        self.sigmoid = nn.Sigmoid()
+        # Enhanced convolutional block
+        self.conv_block = nn.Sequential(
+            nn.Conv1d(input_channels, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(0.2),
+
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(0.3)
+        )
+
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(128 * (input_size // 4), 128),  # /4 due to 2 pooling layers
+            nn.Tanh(),
+            nn.Linear(128, 128 * (input_size // 4)),
+            nn.Sigmoid()
+        )
+
+        # Classifier head
+        self.fc_block = nn.Sequential(
+            nn.Linear(128 * (input_size // 4), 256),  # Increased capacity
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),  # Reduced from 0.5
+
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        # Input shape: (batch_size, seq_len, features)
-        x = x.permute(0, 2, 1)  # Conv1d expects (batch, channels, seq_len)
-        x = self.relu(self.conv1(x))
-        x = self.pool(x)
-        x = self.relu(self.conv2(x))
-        x = self.flatten(x)
-        x = self.relu(self.fc1(x))
-        x = self.sigmoid(self.fc2(x))
-        return x
+        # Input shape: (batch_size, seq_len, 4)
+        x = x.permute(0, 2, 1)  # -> (batch, 4, seq_len)
 
-model = CartPoleClassifier(input_size=WINDOW_SIZE)
+        # Feature extraction
+        x = self.conv_block(x)
+        original_features = x.flatten(1)  # Save for attention
+
+        # Attention mechanism
+        attn_weights = self.attention(original_features)
+        attended_features = original_features * attn_weights
+
+        # Classification
+        x = self.fc_block(attended_features)
+        return x.squeeze()
+
+model = CartPoleClassifier2(input_size=WINDOW_SIZE)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = model.to(device)
 criterion = nn.BCELoss()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.AdamW(model.parameters(),
+                       lr=0.001,
+                       weight_decay=1e-3)  # Increased regularization
+
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=0.01,  # Higher peak LR
+    steps_per_epoch=len(train_loader),
+    epochs=20,
+    pct_start=0.3,
+    div_factor=25,  # Stronger warmup
+    final_div_factor=100
+)
+
+
+def plot_learning_curve(train_losses, val_losses, val_accs):
+    plt.figure(figsize=(12, 4))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(train_losses, label='Train Loss')
+    plt.plot(val_losses, label='Val Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.plot(val_accs, label='Val Accuracy')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig('learning_curve.png')
+    plt.close()
+
 
 def train_model(epochs):
+    train_losses = []
+    val_losses = []
+    val_accs = []
+    best_val_acc = 0.0
+
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
-        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}"):
+
+        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
             inputs, labels = inputs.to(device), labels.to(device)
+            # Training steps
             optimizer.zero_grad()
-            outputs = model(inputs).squeeze()
+            outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
+            scheduler.step()
             train_loss += loss.item()
 
         # Validation
@@ -83,17 +158,29 @@ def train_model(epochs):
         with torch.no_grad():
             for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs).squeeze()
+                outputs = model(inputs)
                 val_loss += criterion(outputs, labels).item()
                 predicted = (outputs > 0.5).float()
                 correct += (predicted == labels).sum().item()
 
-        print(
-            f"Epoch {epoch+1}: "
-            f"Train Loss = {train_loss/len(train_loader):.4f}, "
-            f"Val Loss = {val_loss/len(val_loader):.4f}, "
-            f"Val Acc = {correct/len(val_dataset):.4f}"
-        )
+        val_acc = correct / len(val_dataset)
+
+        # Print metrics
+        print(f"Epoch {epoch + 1}: "
+              f"Train Loss = {train_loss / len(train_loader):.4f}, "
+              f"Val Loss = {val_loss / len(val_loader):.4f}, "
+              f"Val Acc = {val_acc:.4f}, "
+              f"LR = {optimizer.param_groups[0]['lr']:.2e}")  # Monitor LR
+
+        # Save best model
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            torch.save(model.state_dict(), 'best_model.pth')
+        train_losses.append(train_loss / len(train_loader))
+        val_losses.append(val_loss / len(val_loader))
+        val_accs.append(correct / len(val_dataset))
+
+    plot_learning_curve(train_losses, val_losses, val_accs)
 
 train_model(epochs=20)
 
@@ -108,4 +195,4 @@ with torch.no_grad():
 
 print(f"Test Accuracy: {test_correct/len(test_dataset):.4f}")
 # Save
-torch.save(model.state_dict(), "./classifier/random-windows/cartpole_classifier_intense_nuisance.pth")
+torch.save(model.state_dict(), "./model/classifier/scenario-based/cartpole_classifier_intense_nuisance.pth")

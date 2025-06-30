@@ -9,7 +9,60 @@ from tqdm import tqdm
 import inspect
 import os
 
+class CartPoleClassifier2(nn.Module):
+    def __init__(self, input_size=50, input_channels=4):
+        super().__init__()
+        # Enhanced convolutional block
+        self.conv_block = nn.Sequential(
+            nn.Conv1d(input_channels, 64, kernel_size=5, padding=2),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(0.2),
 
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.MaxPool1d(2),
+            nn.Dropout(0.3)
+        )
+
+        # Attention mechanism
+        self.attention = nn.Sequential(
+            nn.Linear(128 * (input_size // 4), 128),  # /4 due to 2 pooling layers
+            nn.Tanh(),
+            nn.Linear(128, 128 * (input_size // 4)),
+            nn.Sigmoid()
+        )
+
+        # Classifier head
+        self.fc_block = nn.Sequential(
+            nn.Linear(128 * (input_size // 4), 256),  # Increased capacity
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),  # Reduced from 0.5
+
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # Input shape: (batch_size, seq_len, 4)
+        x = x.permute(0, 2, 1)  # -> (batch, 4, seq_len)
+
+        # Feature extraction
+        x = self.conv_block(x)
+        original_features = x.flatten(1)  # Save for attention
+
+        # Attention mechanism
+        attn_weights = self.attention(original_features)
+        attended_features = original_features * attn_weights
+
+        # Classification
+        x = self.fc_block(attended_features)
+        return x.squeeze()
 class CartPoleClassifier(nn.Module):
     def __init__(self, input_size=50, input_channels=4):
         super().__init__()
