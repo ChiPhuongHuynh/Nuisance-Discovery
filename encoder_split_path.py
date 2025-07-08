@@ -8,6 +8,8 @@ import numpy as np
 from sklearn.manifold import TSNE
 from utils.models import CartPoleDataset, CartPoleClassifier2
 import matplotlib.pyplot as plt
+import torch
+import os
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -22,7 +24,32 @@ val_loader = DataLoader(val_dataset, batch_size=32, shuffle=True)
 # ======================
 # Model Architectures
 # ======================
+class CheckpointManager:
+    def __init__(self, save_dir, metric_name="val_loss", mode="min"):
+        """
+        Args:
+            save_dir (str): Directory to save checkpoints.
+            metric_name (str): Name of the metric to track (e.g., "val_loss").
+            mode (str): "min" (lower is better) or "max" (higher is better).
+        """
+        self.save_dir = save_dir
+        self.metric_name = metric_name
+        self.mode = mode
+        self.best_metric = float("inf") if mode == "min" else -float("inf")
+        os.makedirs(save_dir, exist_ok=True)
 
+    def __call__(self, model_dict, current_metric):
+        """Save checkpoint if current metric improves."""
+        if (self.mode == "min" and current_metric < self.best_metric) or \
+           (self.mode == "max" and current_metric > self.best_metric):
+            self.best_metric = current_metric
+            self._save_checkpoint(model_dict)
+
+    def _save_checkpoint(self, model_dict):
+        """Save models and optimizer."""
+        checkpoint_path = os.path.join(self.save_dir, "best_checkpoint.pth")
+        torch.save(model_dict, checkpoint_path)
+        print(f"Saved new best checkpoint at {checkpoint_path} (metric: {self.best_metric:.4f})")
 class ImprovedLSTMEncoder(nn.Module):
     def __init__(self, input_dim=4, hidden_dim=128, zy_dim=32, zn_dim=32):
         super().__init__()
@@ -46,6 +73,17 @@ class ImprovedLSTMEncoder(nn.Module):
         return self.fc_y(h), self.fc_n(h)
 
 
+class BetterEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.lstm = nn.LSTM(4, 256, num_layers=2, bidirectional=True)  # ↑ capacity
+        self.fc_y = nn.Linear(512, 64)  # Wider
+        self.fc_n = nn.Linear(512, 64)
+
+    def forward(self, x):
+        x, _ = self.lstm(x)  # (batch, seq, 512)
+        x = x.mean(1)  # Better temporal aggregation
+        return self.fc_y(x), self.fc_n(x)
 class LatentClassifier(nn.Module):
     def __init__(self, input_dim):
         super().__init__()
@@ -59,7 +97,19 @@ class LatentClassifier(nn.Module):
 
     def forward(self, x): return self.net(x)
 
+class LatentClassifier2(nn.Module):
+    def __init__(self, input_dim=64):  # Changed from 32 to 64
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),  # Now accepts 64-dim inputs
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
 
+    def forward(self, x):
+        return self.net(x).squeeze(-1)  # Ensure output is [batch_size]
 class LatentDecoder(nn.Module):
     def __init__(self, input_dim, output_shape=(50, 4)):
         super().__init__()
@@ -124,7 +174,11 @@ def orthogonal_loss(z_y, z_n):
     z_n = F.normalize(z_n, dim=1)
     return (z_y * z_n).sum(dim=1).pow(2).mean()
 
-
+checkpoint = CheckpointManager(
+    save_dir="./models/diffusion/june30/scenario-based",
+    metric_name="val_loss",
+    mode="min"  # Track validation loss (lower = better)
+)
 # ======================
 # Training Loop
 # ======================
@@ -136,10 +190,10 @@ def train_improved(
         epochs=50,  # Reduced from 100
         lr=3e-4,
         loss_weights={
-            'consist': 1.0,  # BCE loss
-            'contrast': 0.3,  # Reduced from 0.5
-            'recon': 0.5,  # Increased from 0.1
-            'inv': 0.5  # Now always positive
+            'consist': 1.0,  # BCE
+            'contrast': 0.5,  # Increased
+            'recon': 0.3,  # Reduced
+            'inv': 1.0  # Increased
         }
 ):
     # Initialize models
@@ -150,7 +204,12 @@ def train_improved(
     # Optimizer setup
     params = list(encoder.parameters()) + list(classifier.parameters()) + list(decoder.parameters())
     opt = AdamW(params, lr=lr, weight_decay=1e-4)
-    scheduler = CosineAnnealingLR(opt, T_max=epochs)
+    scheduler = torch.optim.lr_scheduler.CyclicLR(
+        opt,
+        base_lr=1e-5,
+        max_lr=1e-3,
+        step_size_up=len(train_loader) * 5
+    )
 
     for epoch in range(epochs):
         # Training phase
@@ -186,7 +245,12 @@ def train_improved(
             # Optimization
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(params, 1.0)
+            torch.nn.utils.clip_grad_norm_(
+                list(encoder.parameters()) +
+                list(classifier.parameters()) +
+                list(decoder.parameters()),
+                max_norm=1.0  # Critical hyperparameter
+            )
             opt.step()
 
             total_loss += loss.item()

@@ -8,7 +8,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 #import torch.nn.functional as F
 # Load dataset
-data = np.load("./data/scenario-based/cartpole_realistic_nuisance.npz")
+data = np.load("./data/scenario-based/clean_dataset_nor.npz")
 x_data, y_labels = data["x"], data["y"]
 
 # Convert to PyTorch tensors
@@ -195,4 +195,4 @@ with torch.no_grad():
 
 print(f"Test Accuracy: {test_correct/len(test_dataset):.4f}")
 # Save
-torch.save(model.state_dict(), "./model/classifier/scenario-based/cartpole_classifier_intense_nuisance.pth")
+torch.save(model.state_dict(), "./model/classifier/scenario-based/cartpole_classifier_denoised.pth")
