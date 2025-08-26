@@ -4,63 +4,85 @@ import torch.nn.functional as F
 import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
+from torch.utils.data import TensorDataset, DataLoader
 from sklearn.manifold import TSNE
+import os, math, random
 
-# -----------------------------
-# Toy 2D dataset
-# -----------------------------
-def make_toy2d(n=1000, noise=0.1):
-    x = torch.rand(n, 2) * 2 - 1  # uniform in [-1, 1]
-    y = (x[:, 0] >= x[:, 1]).long()
-    # nuisance: rotation + scaling + bias
-    #theta = torch.rand(n) * 0.5  # random small rotation
-    scale = torch.empty(n, 1).uniform_(0.8, 1.2)
-    x_nuis = x * scale
-
-    bias = torch.empty(n, 1).uniform_(-0.5,0.5)
-    x_nuis = x_nuis + bias
-
-    return x, x_nuis, y
+# ---------------------------
+# Repro / device
+# ---------------------------
+SEED = 42
+torch.manual_seed(SEED)
+random.seed(SEED)
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # -----------------------------
 # Encoder/Decoder
 # -----------------------------
-class Encoder(nn.Module):
-    def __init__(self, d_sig=2, d_nui=2):
+def init_weights_kaiming(module):
+    if isinstance(module, nn.Linear):
+        nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
+        if module.bias is not None:
+            nn.init.zeros_(module.bias)
+
+class TeacherNet(nn.Module):
+    def __init__(self, input_dim=2, hidden=64, n_classes=2):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(2, 64), nn.ReLU(),
-            nn.Linear(64, 32), nn.ReLU()
+            nn.Linear(input_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, n_classes)
         )
-        self.fc_sig = nn.Linear(32, d_sig)
-        self.fc_nui = nn.Linear(32, d_nui)
-
-    def forward(self, x):
-        h = self.net(x)
-        return self.fc_sig(h), self.fc_nui(h)
-
-class Decoder(nn.Module):
-    def __init__(self, d_sig=2, d_nui=2):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_sig + d_nui, 32), nn.ReLU(),
-            nn.Linear(32, 64), nn.ReLU(),
-            nn.Linear(64, 2)
-        )
-    def forward(self, z_sig, z_nui):
-        return self.net(torch.cat([z_sig, z_nui], dim=1))
-
-# -----------------------------
-# Teacher/Student classifiers
-# -----------------------------
-class Classifier(nn.Module):
-    def __init__(self, d_in=2):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(d_in, 32), nn.ReLU(),
-            nn.Linear(32, 2)
-        )
+        self.apply(init_weights_kaiming)
     def forward(self, x): return self.net(x)
+
+
+class SplitEncoder(nn.Module):
+    def __init__(self, input_dim=2, latent_dim=8, signal_dim=4):
+        """
+        Produces a flat latent z = [z_sig | z_nui], but returns (z_sig, z_nui).
+        """
+        super().__init__()
+        assert 0 < signal_dim < latent_dim
+        self.signal_dim = signal_dim
+        self.latent_dim = latent_dim
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, latent_dim)
+        )
+        self.apply(init_weights_kaiming)
+    def forward(self, x):
+        z = self.net(x)                     # (B, L)
+        z_sig = z[:, : self.signal_dim]     # (B, S)
+        z_nui = z[:, self.signal_dim :]     # (B, L-S)
+        return z_sig, z_nui
+
+class SplitDecoder(nn.Module):
+    def __init__(self, latent_dim=8, output_dim=2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim)
+        )
+        self.apply(init_weights_kaiming)
+    def forward(self, z_sig, z_nui):
+        z = torch.cat([z_sig, z_nui], dim=1)
+        return self.net(z)
+
+class LatentClassifier(nn.Module):
+    def __init__(self, signal_dim=4, hidden=32, n_classes=2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(signal_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, n_classes)
+        )
+        self.apply(init_weights_kaiming)
+    def forward(self, z_sig): return self.net(z_sig)
 
 # -----------------------------
 # Loss functions
@@ -68,12 +90,24 @@ class Classifier(nn.Module):
 def reconstruction_loss(x, x_recon):
     return F.mse_loss(x_recon, x)
 
-def distillation_loss(student_logits, teacher_logits):
+def distillation_loss(student_logits, teacher_logits, T=1.0):
     # KL divergence on softmax outputs
-    T = 1.0
     p = F.log_softmax(student_logits / T, dim=1)
     q = F.softmax(teacher_logits / T, dim=1)
     return F.kl_div(p, q, reduction='batchmean') * (T**2)
+
+def cross_correlation_loss(z_sig, z_nui, eps=1e-8):
+    # Center
+    z_s = z_sig - z_sig.mean(dim=0, keepdim=True)
+    z_n = z_nui - z_nui.mean(dim=0, keepdim=True)
+    # Whiten to unit variance (correlation, not covariance)
+    z_s = z_s / (z_s.std(dim=0, unbiased=False, keepdim=True) + eps)
+    z_n = z_n / (z_n.std(dim=0, unbiased=False, keepdim=True) + eps)
+    # Cross-correlation matrix C = (S^T N)/(B-1)
+    B = z_sig.size(0)
+    C = (z_s.T @ z_n) / max(1, (B - 1))
+    # Penalize all entries (full Frobenius)
+    return (C ** 2).sum()
 
 def invariance_loss(z_sig1, z_nui1, z_sig2, z_nui2):
     # |(sig1+nui1) - (sig2+nui2)|
@@ -91,28 +125,70 @@ def clustering_loss(z_sig_list, labels):
 # -----------------------------
 # Training stages
 # -----------------------------
-def pretrain(encoder, decoder, teacher, student, x_nuis, y, epochs=100):
-    opt = optim.Adam(list(encoder.parameters()) +
-                     list(decoder.parameters()) +
-                     list(student.parameters()), lr=1e-3)
+
+def pretrain_encoder_decoder(teacher, x_nuis, y,
+                             encoder: SplitEncoder, decoder: SplitDecoder, latent_clf: LatentClassifier,
+                             epochs=200, batch_size=128, lr=1e-3,
+                             w_rec=1.0, w_kd=1.0, w_cov=0.05, tau=2.0,
+                             device=device, save_prefix="artifacts/pretrained"):
+    """
+    Joint pretraining of encoder+decoder+latent_classifier.
+    The latent_classifier is trained jointly in this loop (not pre-trained separately).
+    """
+    encoder.to(device)
+    decoder.to(device)
+    latent_clf.to(device)
+    teacher.to(device)
     teacher.eval()
-    for ep in range(epochs):
-        z_sig, z_nui = encoder(x_nuis)
-        x_recon = decoder(z_sig, z_nui)
 
-        # teacher supervision
-        with torch.no_grad():
-            teacher_logits = teacher(x_nuis)
-        student_logits = student(z_sig)
+    ds = TensorDataset(x_nuis, y)
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
 
-        # losses
-        loss_recon = reconstruction_loss(x_nuis, x_recon)
-        loss_distill = distillation_loss(student_logits, teacher_logits)
-        loss = loss_recon + loss_distill
+    params = list(encoder.parameters()) + list(decoder.parameters()) + list(latent_clf.parameters())
+    opt = torch.optim.Adam(params, lr=lr, weight_decay=1e-4)
 
-        opt.zero_grad(); loss.backward(); opt.step()
-        if ep % 20 == 0:
-            print(f"[Pretrain] Epoch {ep}, Loss={loss.item():.4f}")
+    for ep in range(1, epochs+1):
+        encoder.train()
+        decoder.train()
+        latent_clf.train()
+
+        total_loss = 0.0; n = 0
+        for xb, yb in dl:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            # forward
+            z_sig, z_nui = encoder(xb)                    # (B, S), (B, N)
+            x_hat = decoder(z_sig, z_nui)                 # (B, 2)
+            student_logits = latent_clf(z_sig)            # (B, C)
+            with torch.no_grad():
+                teacher_logits = teacher(xb)              # (B, C) - teacher sees x_nuis
+
+            # losses
+            L_rec = F.mse_loss(x_hat, xb)                 # reconstruction
+            L_kd  = distillation_loss(student_logits, teacher_logits, T=tau)
+            L_cov = cross_correlation_loss(z_sig, z_nui)
+
+            loss = w_rec * L_rec + w_kd * L_kd + w_cov * L_cov
+
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, max_norm=5.0)
+            opt.step()
+
+            total_loss += loss.item() * xb.size(0)
+            n += xb.size(0)
+
+        avg = total_loss / (n + 1e-12)
+        if ep % 10 == 0 or ep == 1 or ep == epochs:
+            print(f"[Pretrain] ep {ep}/{epochs} | loss {avg:.6f} | rec {L_rec.item():.4f} | kd {L_kd.item():.4f} | cov {L_cov.item():.6f}")
+
+    # save artifacts
+    os.makedirs(os.path.dirname(save_prefix), exist_ok=True)
+    torch.save(encoder.state_dict(), save_prefix + "_encoder.pt")
+    torch.save(decoder.state_dict(), save_prefix + "_decoder.pt")
+    torch.save(latent_clf.state_dict(), save_prefix + "_latentclf.pt")
+    print(f"Saved encoder/decoder/latentclf to {save_prefix}_*.pt")
+    return encoder, decoder, latent_clf
 
 def finetune(encoder, decoder, x_nuis, y, epochs=100):
     encoder.eval()  # freeze encoder
@@ -223,21 +299,26 @@ def plot_tsne_signal_nuisance(encoder, X, y, n_samples=2000, title_prefix="Laten
 # Main
 # -----------------------------
 if __name__ == "__main__":
-    # data
-    x, x_nuis, y = make_toy2d(n=500)
-    #plot_dataset_with_boundary(x_nuis, y, 500)
+    teacher = TeacherNet().to(device)
+    teacher.load_state_dict(torch.load("artifacts/teacher.pt", map_location=device))
+    teacher.eval()
 
-    # models
-    encoder = Encoder(d_sig=2, d_nui=2)
-    decoder = Decoder(d_sig=2, d_nui=2)
-    teacher = Classifier(2); student = Classifier(2)
-    # pretrain teacher
-    opt_t = optim.Adam(teacher.parameters(), lr=1e-3)
-    for _ in range(200):
-        loss = F.cross_entropy(teacher(x_nuis), y)
-        opt_t.zero_grad(); loss.backward(); opt_t.step()
-    # stage 1: pretrain
-    pretrain(encoder, decoder, teacher, student, x_nuis, y, epochs=100)
+    data = torch.load("artifacts/toy2d_data.pt", map_location=device)
+    x, x_nuis, y = data['x'], data['x_nuis'], data['y']
+    latent_dim = 8
+    signal_dim = 4
+    encoder = SplitEncoder(input_dim=2, latent_dim=latent_dim, signal_dim=signal_dim)
+    decoder = SplitDecoder(latent_dim=latent_dim, output_dim=2)
+    latent_clf = LatentClassifier(signal_dim=signal_dim)
+
+    # 3) pretrain E/D (latent classifier is trained jointly, not pre-trained separately)
+    encoder, decoder, latent_clf = pretrain_encoder_decoder(
+        teacher, x_nuis, y,
+        encoder, decoder, latent_clf,
+        epochs=200, batch_size=256, lr=1e-3,
+        w_rec=1.0, w_kd=1.0, w_cov=0.05, tau=2.0,
+        device=device, save_prefix="artifacts/pretrained"
+    )
     plot_tsne_signal_nuisance(encoder, x_nuis, y, title_prefix="Before Fine-tuning")
     # stage 2: finetune
     #finetune(encoder, decoder, x_nuis, y, epochs=100)
