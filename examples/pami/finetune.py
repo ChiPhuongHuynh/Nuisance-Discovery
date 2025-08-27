@@ -296,7 +296,7 @@ def finetune(
         print(f"Saved finetuned decoder to: {save_path}")
     return decoder
 
-def plot_tsne_signal_nuisance_cycle(encoder, decoder, X, y, n_samples=2000, title_prefix="Latent t-SNE (Cycle Encoded)", seed=42):
+def plot_tsne_signal_nuisance_cycle(encoder, decoder, X, y, n_samples=2000, title_prefix="After Fine-tuning (Cycle Encoded)", seed=42):
     """
     Plot t-SNE of signal vs nuisance latents after encode->decode->encode cycle.
 
@@ -371,7 +371,6 @@ if __name__ == "__main__":
 
     encoder = SplitEncoder(input_dim=2, latent_dim=latent_dim, signal_dim=signal_dim)
     decoder = SplitDecoder(latent_dim=latent_dim, output_dim=2)
-    teacher = LatentClassifier(signal_dim=signal_dim, hidden=32, n_classes=2)  # if teacher saved differently, adapt
 
     # load saved weights if present
     if os.path.exists(ENC_PATH):
