@@ -76,6 +76,49 @@ def plot_tsne_signal_nuisance_cycle_consistent(encoder, decoder, X, y, n_samples
     fig.colorbar(sc1, ax=axes, orientation="horizontal", fraction=0.05, pad=0.1, label="Class label")
     plt.show()
 
+def input_comparison_scatter(encoder, decoder, X, X_nuis, y, n_samples=500, title="Cycle effect"):
+    """
+    Scatterplot comparing original nuisance inputs vs cycle-cleaned inputs.
+    """
+    encoder.eval()
+    decoder.eval()
+
+    # subsample
+    if X.shape[0] > n_samples:
+        idx = torch.randperm(X.shape[0])[:n_samples]
+        X = X[idx]
+        X_nuis = X_nuis[idx]
+        y = y[idx]
+
+    with torch.no_grad():
+        # encode nuisance inputs
+        z_sig, z_nui = encoder(X_nuis)
+        n_star = z_nui.mean(dim=0, keepdim=True).expand_as(z_nui)  # canonical nuisance
+
+        # cycle decode/encode
+        X_clean = decoder(z_sig, n_star)
+
+    X_nuis = X_nuis.cpu().numpy()
+    X_clean = X_clean.cpu().numpy()
+    y = y.cpu().numpy()
+
+    # scatterplot
+    plt.figure(figsize=(6,6))
+    plt.scatter(X_nuis[:,0], X_nuis[:,1], c=y, cmap="coolwarm", s=10, alpha=0.5, label="Original nuisance")
+    plt.scatter(X_clean[:,0], X_clean[:,1], c=y, cmap="coolwarm", s=10, alpha=0.8, marker="x", label="Cycle-cleaned")
+
+    # decision boundary x=y
+    lims = [min(X_nuis[:,0].min(), X_clean[:,0].min())-0.1,
+            max(X_nuis[:,0].max(), X_clean[:,0].max())+0.1]
+    plt.plot(lims, lims, "k--", linewidth=1, label="Decision boundary x=y")
+    plt.xlim(lims)
+    plt.ylim(lims)
+
+    plt.title(title)
+    plt.xlabel("x1")
+    plt.ylabel("x2")
+    plt.legend()
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -102,4 +145,5 @@ if __name__ == "__main__":
         print("Warning: pretrained decoder not found; using randomly initialized decoder.")
 
     #plot_tsne_signal_nuisance_cycle_consistent(encoder, decoder, x_nuis, y)
-    plot_tsne_cycle_comparison(encoder, decoder, x_nuis, y)
+    #plot_tsne_cycle_comparison(encoder, decoder, x_nuis, y)
+    input_comparison_scatter(encoder,decoder,x_clean,x_nuis,y)
