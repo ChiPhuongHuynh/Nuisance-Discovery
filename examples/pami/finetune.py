@@ -407,7 +407,7 @@ if __name__ == "__main__":
         batch_size=128,
         lr=1e-4,
         weights=(1.0, 1.0, 1.0),
-        save_path="artifacts/finetuned_encoder.pt",
+        save_path="artifacts/finetuned_decoder.pt",
         verbose=True
     )
 

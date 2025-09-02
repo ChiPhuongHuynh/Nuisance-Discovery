@@ -3,7 +3,7 @@ import numpy as np
 from generate_teachers import make_toy2d, TeacherNet, train_teacher
 from finetune import SplitDecoder, SplitEncoder
 import os
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, random_split
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,22 +19,133 @@ LATENTCLF_PATH = os.path.join(ART_DIR, "pretrained_latentclf.pt")
 TEST_PATH = os.path.join(ART_DIR, "toy2d_data_test.pt")
 DATA_PATH = os.path.join(ART_DIR, "toy2d_data.pt")
 
-def make_cycle_cleaned(encoder, decoder, X_nuis, device):
-    encoder.eval()
-    decoder.eval()
-    with torch.no_grad():
-        z_sig, z_nui = encoder(X_nuis.to(device))
-        mean_nui = z_nui.mean(dim=0, keepdim=True).expand_as(z_nui)
-        X_cleaned = decoder(z_sig, mean_nui)
-    return X_cleaned
+# ------------------------------
+# 0) Ground-truth mapping f*
+# Example: y = 1[x1 >= x2]
+# ------------------------------
+def fstar_threshold(x: torch.Tensor) -> torch.Tensor:
+    return (x[:, 0] >= x[:, 1]).long()
 
-def evaluate_teacher(teacher, X, y, device):
-    teacher.eval()
-    with torch.no_grad():
-        logits = teacher(X.to(device))
-        acc = (logits.argmax(dim=1) == y.to(device)).float().mean().item()
-    return acc
+# ------------------------------
+# 1) Simple same-arch classifier
+# ------------------------------
+class MLP(nn.Module):
+    def __init__(self, in_dim=2, hidden=64, out_dim=2):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden), nn.ReLU(),
+            nn.Linear(hidden, out_dim)
+        )
+    def forward(self, x): return self.net(x)
 
+def train_classifier(model, X, y, device="cpu", epochs=40, lr=1e-3, batch_size=128, val_ratio=0.2, seed=0):
+    torch.manual_seed(seed)
+    ds = TensorDataset(X, y)
+    n_val = int(len(ds) * val_ratio)
+    n_tr  = len(ds) - n_val
+    tr_ds, va_ds = random_split(ds, [n_tr, n_val], generator=torch.Generator().manual_seed(seed))
+
+    tr_ld = DataLoader(tr_ds, batch_size=batch_size, shuffle=True)
+    va_ld = DataLoader(va_ds, batch_size=batch_size, shuffle=False)
+
+    model = model.to(device)
+    opt   = optim.Adam(model.parameters(), lr=lr)
+    crit  = nn.CrossEntropyLoss()
+
+    for ep in range(epochs):
+        model.train()
+        tot = 0.0
+        for xb, yb in tr_ld:
+            xb, yb = xb.to(device), yb.to(device)
+            opt.zero_grad()
+            loss = crit(model(xb), yb)
+            loss.backward(); opt.step()
+            tot += loss.item()
+        # (optional) brief val acc
+        model.eval()
+        with torch.no_grad():
+            num = den = 0
+            for xb, yb in va_ld:
+                xb, yb = xb.to(device), yb.to(device)
+                pred = model(xb).argmax(1)
+                num += (pred == yb).sum().item()
+                den += yb.numel()
+        if (ep+1) % 10 == 0:
+            print(f"[CLF] ep {ep+1:02d}  train_loss={tot/len(tr_ld):.4f}  val_acc={num/den:.3f}")
+    return model
+
+@torch.no_grad()
+def accuracy(model, X, y, device="cpu"):
+    model.eval()
+    logits = model(X.to(device))
+    return (logits.argmax(1).cpu() == y.cpu()).float().mean().item()
+# ------------------------------
+# 2) Your cleaning operator
+# encode → replace nuisance by mean → decode
+# ------------------------------
+@torch.no_grad()
+def clean_with_mean_nuisance(encoder, decoder, X, device="cpu"):
+    encoder.eval(); decoder.eval()
+    X = X.to(device)
+    z_sig, z_nui = encoder(X)
+    z_nui_mean   = z_nui.mean(dim=0, keepdim=True).expand_as(z_nui)
+    X_clean      = decoder(z_sig, z_nui_mean)
+    return X_clean.cpu()
+
+# ------------------------------
+# 3) Functional protocol
+# ------------------------------
+def functional_invariance_protocol(
+    X, encoder, decoder,
+    fstar=fstar_threshold,
+    device="cpu",
+    seed=0,
+    clf_epochs=40,
+):
+    torch.manual_seed(seed)
+
+    # Labels from the perfect mapper
+    y = fstar(X)
+
+    # Build cleaned set once (train split will be carved below)
+    X_clean = clean_with_mean_nuisance(encoder, decoder, X, device=device)
+
+    # Split into train/test for fair comparison
+    N = X.size(0)
+    idx = torch.randperm(N)
+    ntr = int(0.8 * N)
+    tr, te = idx[:ntr], idx[ntr:]
+    X_tr, y_tr = X[tr], y[tr]
+    X_te, y_te = X[te], y[te]
+    Xc_tr, Xc_te = X_clean[tr], X_clean[te]
+
+    # Functional invariance check on test: f*(X_te) vs f*(Xc_te)
+    y_te_star  = fstar(X_te)
+    y_te_starc = fstar(Xc_te)
+    invariance_rate = (y_te_star == y_te_starc).float().mean().item()
+
+    # Train two identical models on different domains
+    f_orig = train_classifier(MLP(in_dim=X.size(1)), X_tr, y_tr, device=device, epochs=clf_epochs, seed=seed)
+    f_clean= train_classifier(MLP(in_dim=X.size(1)), Xc_tr, y_tr, device=device, epochs=clf_epochs, seed=seed)
+
+    # 2×2 accuracy matrix (train-domain × test-domain)
+    acc = {}
+    acc["orig→orig"]   = accuracy(f_orig,  X_te,  y_te, device=device)
+    acc["orig→clean"]  = accuracy(f_orig,  Xc_te, y_te, device=device)
+    acc["clean→orig"]  = accuracy(f_clean, X_te,  y_te, device=device)
+    acc["clean→clean"] = accuracy(f_clean, Xc_te, y_te, device=device)
+
+    print("\n=== Functional Invariance Results ===")
+    print(f"f* invariance on test (Pr[f*(x)=f*(x_clean)]): {invariance_rate:.4f}")
+    print("\nAccuracy matrix (train→test):")
+    for k, v in acc.items(): print(f"  {k:12s} : {v:.4f}")
+
+    return {
+        "invariance_rate": invariance_rate,
+        "acc_matrix": acc,
+        "models": {"orig": f_orig, "clean": f_clean},
+        "splits": {"X_te": X_te, "Xc_te": Xc_te, "y_te": y_te},
+    }
 if __name__ == "__main__":
     latent_dim = 8
     signal_dim = 4
@@ -76,24 +187,17 @@ if __name__ == "__main__":
     else:
         print("Warning: teacher artifact not found; using randomly initialized teacher (not recommended).")
 
-    encoder.to(DEVICE)
-    decoder.to(DEVICE)
-    teacher_original.to(DEVICE)
-
     encoder.eval()
     decoder.eval()
     teacher_original.eval()
 
-    X_cleaned = make_cycle_cleaned(encoder, decoder, X_nuis, DEVICE) #test version with one nuisance
-    x_cleaned = make_cycle_cleaned(encoder, decoder, x_nuis, DEVICE) #train version with one nuisance
-
-    teacher_cleaned = train_teacher(x_cleaned, y, epochs=100, batch_size=64, lr=1e-3) #train one nuisance version
-    torch.save(teacher_cleaned.state_dict(), "artifacts/teacher_cleaned.pt")
-    print("Saved teacher model to artifacts/teacher_cleaned.pt")
-
-    acc_nuis_teacher = evaluate_teacher(teacher_original, X_nuis, y, DEVICE) #test on original test cases
-    acc_clean_teacher = evaluate_teacher(teacher_cleaned, X_cleaned, y, DEVICE) #test on cleaned test cases
-
-    print("\n=== Teacher Retrain Comparison ===")
-    print(f"Teacher trained on nuisance → acc on nuisance : {acc_nuis_teacher*100:.2f}%")
-    print(f"Teacher trained on cleaned  → acc on nuisance : {acc_clean_teacher*100:.2f}%")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    res = functional_invariance_protocol(
+        X=x_nuis,  # use the nuisance-corrupted inputs
+        encoder=encoder,
+        decoder=decoder,
+        fstar=fstar_threshold,  # or your own f*
+        device=device,
+        seed=42,
+        clf_epochs=40,
+    )
