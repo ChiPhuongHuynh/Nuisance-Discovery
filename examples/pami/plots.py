@@ -144,6 +144,6 @@ if __name__ == "__main__":
     else:
         print("Warning: pretrained decoder not found; using randomly initialized decoder.")
 
-    #plot_tsne_signal_nuisance_cycle_consistent(encoder, decoder, x_nuis, y)
+    plot_tsne_signal_nuisance_cycle_consistent(encoder, decoder, x_nuis, y)
     #plot_tsne_cycle_comparison(encoder, decoder, x_nuis, y)
     input_comparison_scatter(encoder,decoder,x_clean,x_nuis,y)
