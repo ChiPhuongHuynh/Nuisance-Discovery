@@ -92,6 +92,47 @@ def clean_with_mean_nuisance(encoder, decoder, X, device="cpu"):
     X_clean      = decoder(z_sig, z_nui_mean)
     return X_clean.cpu()
 
+
+def clean_with_mean_nuisance_filtered(encoder, decoder, teacher, X, y, device="cpu"):
+    """
+    Clean samples by replacing nuisance with mean nuisance,
+    and filter out any cleaned samples that the teacher misclassifies.
+
+    Args:
+        encoder: trained encoder
+        decoder: trained decoder
+        teacher: trained teacher classifier
+        X: input tensor [N, D] (nuisanced inputs)
+        y: labels [N]
+        device: torch device
+    Returns:
+        X_clean_filtered: cleaned inputs kept after filtering
+        y_filtered: corresponding labels
+    """
+    encoder.eval()
+    decoder.eval()
+    teacher.eval()
+    X, y = X.to(device), y.to(device)
+
+    # Encode
+    z_sig, z_nui = encoder(X)
+
+    # Replace nuisance with mean
+    z_nui_mean = z_nui.mean(dim=0, keepdim=True).expand_as(z_nui)
+    X_clean = decoder(z_sig, z_nui_mean)
+
+    # Teacher predictions on cleaned data
+    with torch.no_grad():
+        teacher_logits = teacher(X_clean)
+        y_pred = teacher_logits.argmax(dim=1)
+
+    # Filter out mismatched predictions
+    mask = (y_pred == y)
+    X_clean_filtered = X_clean[mask].detach().cpu()
+    y_filtered = y[mask].detach().cpu()
+
+    return X_clean_filtered, y_filtered, mask
+
 # ------------------------------
 # 3) Functional protocol
 # ------------------------------
@@ -101,14 +142,23 @@ def functional_invariance_protocol(
     device="cpu",
     seed=0,
     clf_epochs=40,
+    teacher = None,
+    y = None
 ):
     torch.manual_seed(seed)
 
     # Labels from the perfect mapper
-    y = fstar(X)
+    # y = fstar(X)
 
     # Build cleaned set once (train split will be carved below)
-    X_clean = clean_with_mean_nuisance(encoder, decoder, X, device=device)
+    # X_clean = clean_with_mean_nuisance(encoder, decoder, X, device=device)
+    X_clean, y_clean, mask = clean_with_mean_nuisance_filtered(
+        encoder, decoder, teacher, X, y, device=device
+    )
+
+    # Subselect original X, y using the same mask so shapes match
+    X = X[mask]
+    y = y[mask]
 
     # Split into train/test for fair comparison
     N = X.size(0)
@@ -200,4 +250,6 @@ if __name__ == "__main__":
         device=device,
         seed=42,
         clf_epochs=40,
+        teacher=teacher_original,
+        y=y
     )
