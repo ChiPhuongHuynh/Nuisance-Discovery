@@ -1,21 +1,22 @@
 import torch, os
-from model import plot_dataset_with_boundary, save_data
+from model import plot_clusters, save_data
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
+from matplotlib import pyplot as plt
 
 DATA_PATH = "artifacts/cluster_problem_train.pt"
 
-def make_cluster_problem(n=2000, n_classes=3, noise=0.1, seed=0):
+def make_cluster_problem(n=2000, n_classes=2, noise=0.1, seed=0):
     torch.manual_seed(seed)
 
     # --- Step 1: generate clean clusters ---
     # Move clusters closer & increase variance
-    means = torch.tensor([[0.0,0.0], [1.5,1.0], [-1.0,1.5]])[:n_classes]
+    means = torch.tensor([[0.0,0.0], [-1.0,1.5]])[:n_classes]
     cov   = 0.3 * torch.eye(2)  # larger covariance
     samples_per_class = n // n_classes
-
+    print(means)
     X_clean, Y = [], []
     for i, mu in enumerate(means):
         mvn = torch.distributions.MultivariateNormal(mu, cov)
@@ -42,13 +43,13 @@ def make_cluster_problem(n=2000, n_classes=3, noise=0.1, seed=0):
     return X_clean, X_nuis, Y
 
 class TeacherLogReg(nn.Module):
-    def __init__(self, in_dim=2, n_classes=3):
+    def __init__(self, in_dim=2, n_classes=2):
         super().__init__()
         self.fc = nn.Linear(in_dim, n_classes)
     def forward(self, x): return self.fc(x)
 
 class TeacherMLP(nn.Module):
-    def __init__(self, in_dim=2, hidden=64, n_classes=3):
+    def __init__(self, in_dim=2, hidden=64, n_classes=2):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
@@ -60,7 +61,7 @@ class TeacherMLP(nn.Module):
     def forward(self, x): return self.net(x)
 
 class TeacherShallowMLP(nn.Module):
-    def __init__(self, in_dim=2, hidden=16, n_classes=3, p_drop=0.3):
+    def __init__(self, in_dim=2, hidden=16, n_classes=2, p_drop=0.3):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
@@ -72,7 +73,7 @@ class TeacherShallowMLP(nn.Module):
 
 
 class TeacherDeepMLP(nn.Module):
-    def __init__(self, in_dim=2, hidden=64, n_classes=3):
+    def __init__(self, in_dim=2, hidden=64, n_classes=2):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
@@ -86,7 +87,7 @@ class TeacherDeepMLP(nn.Module):
     def forward(self, x): return self.net(x)
 
 class TeacherRBF(nn.Module):
-    def __init__(self, in_dim=2, hidden=15, n_classes=3):  # fewer centers
+    def __init__(self, in_dim=2, hidden=15, n_classes=2):  # fewer centers
         super().__init__()
         self.centers = nn.Parameter(torch.randn(hidden, in_dim))
         self.log_sigma = nn.Parameter(torch.zeros(1), requires_grad=False)  # fixed sigma
@@ -99,7 +100,7 @@ class TeacherRBF(nn.Module):
 
 
 class TeacherCNN2D(nn.Module):
-    def __init__(self, n_classes=3):
+    def __init__(self, n_classes=2):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=3, padding=1),
@@ -153,6 +154,7 @@ def train_teacher(model, X, Y, n_epochs=50, batch_size=64, lr=1e-3, save_path="t
 if __name__ == "__main__":
     data = torch.load(DATA_PATH)
     X_clean, X_nuis, Y = data['X_clean'], data['X_nuis'], data['Y']
+    #X_clean, X_nuis, Y = make_cluster_problem()
     #save_data(X_clean, X_nuis, Y, True)
-    teacher1 = TeacherCNN2D()
-    train_teacher(teacher1, X_nuis, Y, save_path="artifacts/teacher_cnn2d.pt")
+    teacher1 = TeacherRBF()
+    train_teacher(teacher1, X_nuis, Y, save_path="artifacts/teacher_rbf.pt")

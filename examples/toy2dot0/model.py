@@ -2,30 +2,13 @@ import torch, os
 from matplotlib import pyplot as plt
 import numpy as np
 DATA_PATH = "artifacts/cluster_problem_train.pt"
-def plot_dataset_with_boundary(x_nuis, y, n_samples=1000):
-    """
-    Scatterplot of 2D dataset with class-based coloration.
-    x_nuis: torch.Tensor [N,2]
-    y: torch.Tensor [N]
-    """
-    x_np = x_nuis.detach().cpu().numpy()
-    y_np = y.detach().cpu().numpy()
-
-    if n_samples < len(x_np):
-        x_np = x_np[:n_samples]
-        y_np = y_np[:n_samples]
-
-    plt.figure(figsize=(6, 6))
-    plt.scatter(x_np[:, 0], x_np[:, 1], c=y_np, cmap="coolwarm", alpha=0.6)
-    """
-    plt.plot([x_np[:,0].min(), x_np[:,0].max()],
-             [x_np[:,0].min(), x_np[:,0].max()],
-             "k--", label="Decision boundary x=y")
-    """
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.legend()
-    plt.title("Toy 2D dataset with true decision boundary")
+def plot_clusters(X_clean, Y):
+    X_np = X_clean.cpu().numpy()
+    Y_np = Y.cpu().numpy()
+    plt.figure(figsize=(6,6))
+    plt.scatter(X_np[:,0], X_np[:,1], c=Y_np, cmap="coolwarm", alpha=0.6)
+    plt.title("Clean clusters before nuisances")
+    plt.xlabel("x"); plt.ylabel("y")
     plt.show()
 
 def save_data(X_clean, X_nuis, Y, exist_ok=False):

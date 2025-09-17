@@ -1,7 +1,7 @@
 import torch, torch.nn as nn, torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
-from cluster import TeacherMLP
+from cluster import TeacherMLP, TeacherCNN2D, TeacherLogReg, TeacherRBF
 import os
 
 # ===== Models =====
@@ -28,7 +28,7 @@ class SplitDecoder(nn.Module):
         return self.net(torch.cat([z_sig, z_nui], dim=1))
 
 class StudentClassifier(nn.Module):
-    def __init__(self, signal_dim=4, n_classes=3):
+    def __init__(self, signal_dim=4, n_classes=2):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(signal_dim, 32), nn.ReLU(),
@@ -134,21 +134,21 @@ if __name__ == "__main__":
     train_loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=64, shuffle=True)
 
     # Load pretrained teacher (your ~90% MLP)
-    teacher = TeacherMLP()
-    teacher.load_state_dict(torch.load("artifacts/teacher_mlp.pt"))
+    teacher = TeacherRBF()
+    teacher.load_state_dict(torch.load("artifacts/teacher_rbf.pt"))
     teacher.eval()
 
     # Init models
     encoder = SplitEncoder(input_dim=2, latent_dim=8, signal_dim=4)
     decoder = SplitDecoder(latent_dim=8, output_dim=2)
-    student = StudentClassifier(signal_dim=4, n_classes=3)
+    student = StudentClassifier(signal_dim=4, n_classes=2)
 
     # Stage 1: pretrain
     encoder, decoder, student = pretrain(encoder, decoder, student, teacher, train_loader, epochs=50)
-    torch.save(encoder.state_dict(), "artifacts/ae/mlp/encoder_pretrained.pt")
-    torch.save(decoder.state_dict(), "artifacts/ae/mlp/decoder_pretrained.pt")
+    torch.save(encoder.state_dict(), "artifacts/ae/rbf/encoder_pretrained.pt")
+    torch.save(decoder.state_dict(), "artifacts/ae/rbf/decoder_pretrained.pt")
 
     # Stage 2: finetune
-    decoder = finetune(encoder, decoder, train_loader, epochs=50)
-    torch.save(encoder.state_dict(), "artifacts/ae/mlp/encoder_finetuned.pt")
-    torch.save(decoder.state_dict(), "artifacts/ae/mlp/decoder_finetuned.pt")
+    #decoder = finetune(encoder, decoder, train_loader, epochs=50)
+    #torch.save(encoder.state_dict(), "artifacts/ae/mlp/encoder_finetuned.pt")
+    #torch.save(decoder.state_dict(), "artifacts/ae/mlp/decoder_finetuned.pt")

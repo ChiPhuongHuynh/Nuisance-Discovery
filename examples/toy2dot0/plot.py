@@ -65,9 +65,9 @@ def plot_tsne_signal_nuisance_cycle_consistent(encoder, decoder, X, y, n_samples
 
 if __name__ == "__main__":
     encoder = SplitEncoder()
-    encoder.load_state_dict(torch.load("artifacts/ae/mlp/encoder_finetuned.pt"))
+    encoder.load_state_dict(torch.load("artifacts/encoder_finetuned.pt"))
     decoder = SplitDecoder()
-    decoder.load_state_dict(torch.load("artifacts/ae/mlp/decoder_finetuned.pt"))
+    decoder.load_state_dict(torch.load("artifacts/decoder_finetuned.pt"))
 
     data = torch.load("artifacts/cluster_problem_train.pt")
     X_clean, X_nuis, Y = data["X_clean"], data["X_nuis"], data["Y"]
