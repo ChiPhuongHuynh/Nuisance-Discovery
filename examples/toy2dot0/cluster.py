@@ -154,7 +154,8 @@ def train_teacher(model, X, Y, n_epochs=50, batch_size=64, lr=1e-3, save_path="t
 if __name__ == "__main__":
     data = torch.load(DATA_PATH)
     X_clean, X_nuis, Y = data['X_clean'], data['X_nuis'], data['Y']
+    plot_clusters(X_nuis, Y)
     #X_clean, X_nuis, Y = make_cluster_problem()
     #save_data(X_clean, X_nuis, Y, True)
-    teacher1 = TeacherRBF()
-    train_teacher(teacher1, X_nuis, Y, save_path="artifacts/teacher_rbf.pt")
+    #teacher1 = TeacherRBF()
+    #train_teacher(teacher1, X_nuis, Y, save_path="artifacts/teacher_rbf.pt")

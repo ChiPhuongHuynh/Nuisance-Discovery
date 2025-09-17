@@ -152,8 +152,8 @@ if __name__ == "__main__":
     )
 
     # After training: pick the MLP decoder for cleaning
-    mlp_decoder = decoders[0]  # if index 0 = MLP
-    mlp_encoder = encoders[0]
+    mlp_decoder = decoders[3]  # if index 0 = MLP
+    mlp_encoder = encoders[3]
 
-    torch.save(mlp_encoder.state_dict(), "artifacts/encoder_finetuned.pt")
-    torch.save(mlp_decoder.state_dict(), "artifacts/decoder_finetuned.pt")
+    torch.save(mlp_encoder.state_dict(), "artifacts/cnn_encoder_finetuned.pt")
+    torch.save(mlp_decoder.state_dict(), "artifacts/cnn_decoder_finetuned.pt")

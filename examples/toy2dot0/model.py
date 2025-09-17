@@ -7,7 +7,7 @@ def plot_clusters(X_clean, Y):
     Y_np = Y.cpu().numpy()
     plt.figure(figsize=(6,6))
     plt.scatter(X_np[:,0], X_np[:,1], c=Y_np, cmap="coolwarm", alpha=0.6)
-    plt.title("Clean clusters before nuisances")
+    plt.title("Clusters")
     plt.xlabel("x"); plt.ylabel("y")
     plt.show()
 

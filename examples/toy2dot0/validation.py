@@ -1,6 +1,6 @@
 import os
 import torch
-from cluster import make_cluster_problem, TeacherMLP, train_teacher
+from cluster import make_cluster_problem, TeacherCNN2D, train_teacher
 from model import plot_clusters, save_data
 import torch.nn as nn
 import torch.optim as optim
@@ -70,7 +70,7 @@ def evaluate_cleaning_pipeline(
     X_train_clean = clean_with_mean_nuisance(encoder, decoder, X_train, device=device)
 
     # --- Step 3: Retrain student (same architecture as teacher) ---
-    student = TeacherMLP().to(device)
+    student = TeacherCNN2D().to(device)
     student = train_teacher(student, X_train_clean, y_train, save_path="artifacts/mlp_clean.pt")
 
     # --- Step 4: Evaluate student ---
@@ -89,13 +89,13 @@ def evaluate_cleaning_pipeline(
 
 if __name__ == "__main__":
     encoder = SplitEncoder()
-    encoder.load_state_dict(torch.load("artifacts/encoder_finetuned.pt"))
+    encoder.load_state_dict(torch.load("artifacts/cnn_encoder_finetuned.pt"))
 
     decoder = SplitDecoder()
-    decoder.load_state_dict(torch.load("artifacts/decoder_finetuned.pt"))
+    decoder.load_state_dict(torch.load("artifacts/cnn_decoder_finetuned.pt"))
 
-    teacher = TeacherMLP().to(device)
-    teacher.load_state_dict(torch.load("artifacts/teacher_mlp.pt"))
+    teacher = TeacherCNN2D().to(device)
+    teacher.load_state_dict(torch.load("artifacts/teacher_cnn2d.pt"))
 
     X_val, X_val_nuis, y_val = make_cluster_problem(n=500, n_classes=2, seed=123)
     data = torch.load(DATA_PATH)
