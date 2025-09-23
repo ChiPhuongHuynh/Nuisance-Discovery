@@ -180,8 +180,8 @@ def functional_invariance_protocol(
 
     # 2×2 accuracy matrix (train-domain × test-domain)
     acc = {}
-    acc["orig→orig"]   = accuracy(f_orig,  X_te,  y_te, device=device)
-    acc["orig→clean"]  = accuracy(f_orig,  Xc_te, y_te, device=device)
+    acc["orig→orig"]   = accuracy(teacher,  X_te,  y_te, device=device)
+    acc["orig→clean"]  = accuracy(teacher,  Xc_te, y_te, device=device)
     acc["clean→orig"]  = accuracy(f_clean, X_te,  y_te, device=device)
     acc["clean→clean"] = accuracy(f_clean, Xc_te, y_te, device=device)
 
@@ -202,7 +202,7 @@ if __name__ == "__main__":
 
     d = torch.load(DATA_PATH, map_location="cpu")
     x_clean, x_nuis, y = d["x"], d["x_nuis"], d["y"]
-
+    """
     if os.path.exists(TEST_PATH):
         test_data = torch.load(TEST_PATH, map_location=DEVICE)
         X, X_nuis, Y = test_data['x'], test_data['x_nuis'], test_data['y']
@@ -211,7 +211,7 @@ if __name__ == "__main__":
         X, X_nuis, Y = make_toy2d(n=2000, seed=42)
         torch.save({"x": X, "x_nuis": X_nuis, "y": Y}, "artifacts/toy2d_data_test.pt")
         print(" Saved dataset to artifacts/toy2d_data_test.pt")
-
+    """
     encoder = SplitEncoder(input_dim=2, latent_dim=latent_dim, signal_dim=signal_dim)
     decoder = SplitDecoder(latent_dim=latent_dim, output_dim=2)
     teacher_original = TeacherNet()

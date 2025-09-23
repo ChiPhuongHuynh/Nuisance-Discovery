@@ -1,118 +1,144 @@
-import torch, torch.nn as nn, torch.nn.functional as F
-import torchvision
-import torchvision.transforms as transforms
-from torch.utils.data import Dataset, DataLoader
+import torch
+from torch.utils.data import Subset
 import torchvision.transforms as T
-from torchvision.datasets import MNIST
-import numpy as np, random
-from PIL import Image
-from matplotlib import pyplot as plt
+from torchvision import datasets
+from torch.utils.data import TensorDataset
+import torchvision.transforms.functional as TF
+import os
+from original_train import SimpleMLP, train_baseline
+import random
 
-# --------------------------
-# Step 1: Dataset with nuisances
-# --------------------------
+def add_nuisance(X, p=1.0, seed=42):
+    """
+    Apply one random nuisance per image in the batch.
+    Args:
+        X: tensor [N,1,28,28] in [0,1]
+        p: probability of applying a nuisance
+        seed: for reproducibility
+    Returns:
+        X_nuis: tensor with nuisances applied
+    """
+    if seed is not None:
+        random.seed(seed)
+        torch.manual_seed(seed)
 
-def apply_mnist_nuisances(img_tensor):
-    """Apply random nuisances to a MNIST image (1x28x28)."""
-    x = T.ToPILImage()(img_tensor)
-    # random translation
-    if random.random() < 0.5:
-        tx, ty = random.randint(-3, 3), random.randint(-3, 3)
-        x = T.functional.affine(x, angle=0, translate=(tx, ty), scale=1.0, shear=0)
-    # random rotation
-    if random.random() < 0.5:
-        ang = random.uniform(-15, 15)
-        x = T.functional.rotate(x, ang)
-    # brightness/contrast
-    if random.random() < 0.5:
-        x = T.functional.adjust_brightness(x, random.uniform(0.8, 1.2))
-    if random.random() < 0.5:
-        x = T.functional.adjust_contrast(x, random.uniform(0.8, 1.2))
-    # gaussian noise
-    arr = np.array(x).astype(np.float32)/255.0
-    if random.random() < 0.5:
-        arr += np.random.normal(0, 0.08, arr.shape)
-        arr = np.clip(arr, 0, 1)
-    return T.ToTensor()(Image.fromarray((arr*255).astype(np.uint8)))
+    X_out = []
+    for img in X:  # loop over batch (N,1,28,28)
+        if random.random() > p:
+            X_out.append(img)
+            continue
 
-class MNISTNuisance(Dataset):
-    def __init__(self, root="./data", train=True, download=True):
-        self.base = MNIST(root, train=train, download=download, transform=T.ToTensor())
-    def __len__(self): return len(self.base)
-    def __getitem__(self, idx):
-        x, y = self.base[idx]
-        x_nuis = apply_mnist_nuisances(x)
-        return x, x_nuis, y
+        nuisance_type = random.choice([
+            "scale", "bias", "rotation", "translation", "contrast", "brightness"
+        ])
 
-# --------------------------
-# Step 2: Teacher model & training
-# --------------------------
+        if nuisance_type == "scale":
+            scale = torch.empty(1).uniform_(0.9, 1.1).item()
+            img = img * scale
 
-class TeacherCNN(nn.Module):
-    def __init__(self, num_classes=10):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(1,32,3,1,1), nn.ReLU(),
-            nn.MaxPool2d(2),                # 14x14
-            nn.Conv2d(32,64,3,1,1), nn.ReLU(),
-            nn.MaxPool2d(2),                # 7x7
-            nn.Flatten(),
-            nn.Linear(64*7*7,128), nn.ReLU(),
-            nn.Linear(128,num_classes)
-        )
-    def forward(self, x): return self.net(x)
+        elif nuisance_type == "bias":
+            bias = torch.empty(1).uniform_(-0.2, 0.2).item()
+            img = img + bias
 
-def train_teacher(model, loader, device="cpu", epochs=5, lr=1e-3):
-    opt = torch.optim.Adam(model.parameters(), lr=lr)
-    for ep in range(epochs):
-        total, correct, loss_sum = 0, 0, 0
-        for _, x_nuis, y in loader:
-            x_nuis, y = x_nuis.to(device), y.to(device)
-            logits = model(x_nuis)
-            loss = F.cross_entropy(logits, y)
-            opt.zero_grad(); loss.backward(); opt.step()
-            loss_sum += loss.item()*y.size(0)
-            correct += (logits.argmax(1)==y).sum().item()
-            total += y.size(0)
-        print(f"[Teacher] Epoch {ep+1} loss={loss_sum/total:.4f}, acc={correct/total:.4f}")
-    return model
+        elif nuisance_type == "rotation":
+            angle = random.uniform(-15, 15)  # degrees
+            img = TF.rotate(img, angle, fill=0)
 
+        elif nuisance_type == "translation":
+            max_shift = 3  # pixels
+            dx, dy = random.randint(-max_shift, max_shift), random.randint(-max_shift, max_shift)
+            img = TF.affine(img, angle=0, translate=[dx, dy], scale=1.0, shear=0, fill=0)
+
+        elif nuisance_type == "contrast":
+            factor = random.uniform(0.7, 1.3)
+            img = TF.adjust_contrast(img, factor)
+
+        elif nuisance_type == "brightness":
+            factor = random.uniform(0.7, 1.3)
+            img = TF.adjust_brightness(img, factor)
+
+        # clamp to valid range
+        img = torch.clamp(img, 0.0, 1.0)
+        X_out.append(img)
+
+    return torch.stack(X_out)
+
+
+
+def make_nuisanced_subset(root="data", frac=0.5, seed=42, train=True, save_path = "artifacts/mnist_nuis.pt"):
+    torch.manual_seed(seed)
+
+    # raw MNIST (not normalized yet)
+    transform = T.ToTensor()
+    if train:
+        full_train = datasets.MNIST(root=root, train=True, download=True, transform=transform)
+    # choose subset
+    n_total = len(full_train)
+    n_sub = int(frac * n_total)
+    idx = torch.randperm(n_total)[:n_sub]
+    subset = Subset(full_train, idx)
+
+    # extract tensors
+    X = torch.stack([subset[i][0] for i in range(len(subset))])  # [N,1,28,28]
+    y = torch.tensor([subset[i][1] for i in range(len(subset))])  # [N]
+
+    # add nuisances
+    X_nuis = add_nuisance(X)
+
+    # save (un-normalized, reproducible)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save({"X": X_nuis, "y": y}, save_path)
+    print(f"✅ Saved nuisanced subset: {X_nuis.shape}, {y.shape} -> {save_path}")
+
+def make_nuisanced_test(root="data", save_path="artifacts/mnist_test_nuis.pt", seed=123):
+    torch.manual_seed(seed)
+    transform = T.ToTensor()
+    test_set = datasets.MNIST(root=root, train=False, download=True, transform=transform)
+
+    # extract tensors
+    X = torch.stack([test_set[i][0] for i in range(len(test_set))])  # [10000,1,28,28]
+    y = torch.tensor([test_set[i][1] for i in range(len(test_set))])
+
+    # add nuisances
+    X_nuis = add_nuisance(X)
+
+    # save (un-normalized for reproducibility)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save({"X": X_nuis, "y": y}, save_path)
+    print(f"✅ Saved nuisanced test set: {X_nuis.shape}, {y.shape} -> {save_path}")
+
+def load_nuisanced_test(path, normalize=True):
+    d = torch.load(path, map_location="cpu")
+    X, y = d["X"].float(), d["y"].long()
+
+    if normalize:
+        X = (X - 0.5) / 0.5  # map [0,1] → [-1,1]
+
+    return TensorDataset(X, y)
+
+def load_nuisanced_subset(path, normalize=True):
+    d = torch.load(path, map_location="cpu")
+    X, y = d["X"].float(), d["y"].long()
+
+    if normalize:
+        X = (X - 0.5) / 0.5  # map [0,1] → [-1,1]
+
+    return TensorDataset(X, y)
 
 if __name__ == "__main__":
-    dataset = MNISTNuisance(train=True)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Normalization transform: maps [0,1] -> [-1,1]
-    normalize = T.Normalize((0.5,), (0.5,))
+    # Step 1: Create nuisanced subset (only run once)
+    make_nuisanced_subset(frac=0.1, save_path="artifacts/mnist_nuis_train.pt")
+    #make_nuisanced_test(save_path="artifacts/mnist_nuis_test.pt")
 
-    # --------------------------
-    # Step 2: Pick a few samples
-    # --------------------------
-    n_show = 6
-    fig, axes = plt.subplots(3, n_show, figsize=(12, 6))
+    # Step 2: Load subset
+    train_ds = load_nuisanced_subset("artifacts/mnist_nuis_train.pt")
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=128, shuffle=True)
+    test_nuis = load_nuisanced_test("artifacts/mnist_nuis_test.pt")
+    test_loader = torch.utils.data.DataLoader(test_nuis, batch_size=128, shuffle=False)
 
-    for i in range(n_show):
-        x_clean, x_nuis, y = dataset[i]
-
-        # normalize nuisance
-        x_nuis_norm = normalize(x_nuis)
-
-        # Plot original (top row)
-        axes[0, i].imshow(x_clean.squeeze(0), cmap="gray")
-        axes[0, i].set_title(f"Label {y}")
-        axes[0, i].axis("off")
-
-        # Plot nuisanced (middle row)
-        axes[1, i].imshow(x_nuis.squeeze(0), cmap="gray")
-        axes[1, i].set_title("Nuisance")
-        axes[1, i].axis("off")
-
-        # Plot normalized nuisanced (bottom row)
-        # Bring back to [0,1] for visualization: x_norm*0.5 + 0.5
-        axes[2, i].imshow((x_nuis_norm * 0.5 + 0.5).squeeze(0), cmap="gray")
-        axes[2, i].set_title("Norm Nuisance")
-        axes[2, i].axis("off")
-
-    plt.suptitle("MNIST Nuisance Pipeline: Clean vs Nuisance vs Normalized")
-    plt.tight_layout()
-    plt.savefig("nuisance_visualization.png")
-    plt.close()
+    # Step 4: Train teacher
+    model = SimpleMLP().to(device)
+    train_baseline(model, train_loader, test_loader, device=device, epochs=10)
+    torch.save(model.state_dict(), "artifacts/teacher_nuis.pt")
