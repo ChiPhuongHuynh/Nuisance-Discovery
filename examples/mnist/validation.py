@@ -5,7 +5,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from data import load_nuisanced_subset  # Your data loading function
 from data import SimpleMLP
-from pretrain import SplitDecoder, SplitEncoder
+from pretrain_contentaware import SplitDecoder, SplitEncoder
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -28,7 +28,7 @@ def clean_with_mean_nuisance(encoder, decoder, data, batch_size=64, device=devic
 
             sig, nuis = encoder(batch_flat)
             nuis_star = nuis.mean(dim=0, keepdim=True).expand_as(nuis)
-            cleaned_batch = decoder(sig, nuis_star)
+            cleaned_batch = decoder(torch.cat([sig, nuis_star], dim=1))
 
             # Reshape back to image format if needed
             cleaned_batch = cleaned_batch.view(-1, 1, 28, 28)
@@ -194,10 +194,10 @@ if __name__ == "__main__":
 
     # Load encoder and decoder
     encoder = SplitEncoder()
-    encoder.load_state_dict(torch.load("artifacts/encoder_pretrain.pt", map_location=device))
+    encoder.load_state_dict(torch.load("artifacts/mnist_encoder_pretrain.pt", map_location=device))
 
     decoder = SplitDecoder()
-    decoder.load_state_dict(torch.load("artifacts/decoder_pretrain.pt", map_location=device))
+    decoder.load_state_dict(torch.load("artifacts/mnist_decoder_pretrain.pt", map_location=device))
 
     # Load teacher (already trained on nuisanced data)
     teacher = SimpleMLP()
