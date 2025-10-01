@@ -88,143 +88,99 @@ def visualize_cleaning_examples(encoder, decoder, dataset, device="cpu", n_show=
     plt.tight_layout()
     plt.show()
 
-def cycle_tsne_visualization(encoder, decoder, dataset, device="cpu",
-                             n_samples=2000, seed=0, perplexity=30, title_prefix="Cycle t-SNE"):
+
+def tsne_signal_nuisance_cycle(encoder, decoder, dataset,
+                               device="cpu", n_samples=2000,
+                               seed=0, perplexity=30,
+                               title_prefix="Cycle t-SNE"):
     """
-    Generate a 2x3 t-SNE visualization comparing original vs encode->decode->encode cycle.
-    Left column: original (signal, nuisance, joint)
-    Right column: cycle   (signal, nuisance, joint)
+    Joint t-SNE visualization of signal vs nuisance, before and after cycle.
 
     Args:
-        encoder: model mapping x -> (z_sig, z_nui)
-        decoder: model mapping concat(z_sig, z_nui) -> x_recon (or accepts z directly)
-        dataset: TensorDataset (X, y) or tuple (X, y) where X is [N, C, H, W] or [N, D]
-        device: "cpu" or "cuda"
-        n_samples: number of examples to sample for plotting
-        seed: random seed for reproducibility
+        encoder: model mapping X -> (z_sig, z_nui)
+        decoder: model mapping concat(z_sig, z_nui) -> X_recon
+        dataset: (X, y) or TensorDataset
+        device: torch device
+        n_samples: number of samples
+        seed: random seed
         perplexity: t-SNE perplexity
-        title_prefix: plot title prefix
+        title_prefix: prefix for plot titles
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    encoder = encoder.to(device)
-    decoder = decoder.to(device)
-    encoder.eval(); decoder.eval()
+    encoder, decoder = encoder.to(device).eval(), decoder.to(device).eval()
 
-    # Extract X, y from dataset (TensorDataset or tuple)
+    # Extract X, y
     if hasattr(dataset, "tensors"):
         X_all, y_all = dataset.tensors
     else:
         X_all, y_all = dataset
     N = X_all.shape[0]
 
-    # Subsample indices
+    # Subsample
     n = min(n_samples, N)
-    idx = torch.randperm(N, device="cpu")[:n]
+    idx = torch.randperm(N)[:n]
     X = X_all[idx].to(device)
     y = y_all[idx].cpu().numpy()
 
-    # 1) Encode original
     with torch.no_grad():
-        z_sig, z_nui = encoder(X)        # z_sig: (n, S), z_nui: (n, N)
-        z_joint = torch.cat([z_sig, z_nui], dim=1)  # (n, S+N)
+        # Encode original
+        z_sig, z_nui = encoder(X)
 
-        # Decode then re-encode (cycle)
-        z_cat = z_joint
-        x_recon = decoder(z_cat)         # decoder expects concatenated latent
-        z_sig2, z_nui2 = encoder(x_recon)
-        z_joint2 = torch.cat([z_sig2, z_nui2], dim=1)
+        # Cycle: decode -> encode again
+        z_joint = torch.cat([z_sig, z_nui], dim=1)
+        X_recon = decoder(z_joint)
+        z_sig2, z_nui2 = encoder(X_recon)
 
-    # Move to cpu numpy
-    z_sig = z_sig.cpu().numpy()
-    z_nui = z_nui.cpu().numpy()
-    z_joint = z_joint.cpu().numpy()
+    # Convert to numpy
+    z_sig, z_nui = z_sig.cpu().numpy(), z_nui.cpu().numpy()
+    z_sig2, z_nui2 = z_sig2.cpu().numpy(), z_nui2.cpu().numpy()
 
-    z_sig2 = z_sig2.cpu().numpy()
-    z_nui2 = z_nui2.cpu().numpy()
-    z_joint2 = z_joint2.cpu().numpy()
+    # --- Stack all together for one joint t-SNE ---
+    Z = np.concatenate([z_sig, z_nui, z_sig2, z_nui2], axis=0)
+    # domain labels (0=orig-sig, 1=orig-nui, 2=cyc-sig, 3=cyc-nui)
+    domains = np.array([0] * len(z_sig) + [1] * len(z_nui) +
+                       [2] * len(z_sig2) + [3] * len(z_nui2))
+    class_labels = np.tile(y, 4)
 
-    # Dimensions
-    S = z_sig.shape[1]
-    M = z_nui.shape[1]
-    J = S + M
+    tsne = TSNE(n_components=2,
+                perplexity=min(perplexity, len(Z) // 3),
+                random_state=seed,
+                init="pca", learning_rate="auto")
+    Z_2d = tsne.fit_transform(Z)
 
-    # Pad signal and nuisance into joint space:
-    # - signal_padded: [z_sig, zeros(M)]
-    # - nuisance_padded: [zeros(S), z_nui]
-    def pad_to_joint(sig, nui):
-        n_pts = sig.shape[0]
-        sig_pad = np.concatenate([sig, np.zeros((n_pts, M), dtype=sig.dtype)], axis=1)   # (n, J)
-        nui_pad = np.concatenate([np.zeros((n_pts, S), dtype=nui.dtype), nui], axis=1)   # (n, J)
-        joint = np.concatenate([sig, nui], axis=1)  # (n, J)
-        return sig_pad, nui_pad, joint
+    # Split back
+    Z_os = Z_2d[domains == 0]  # orig-signal
+    Z_on = Z_2d[domains == 1]  # orig-nuis
+    Z_cs = Z_2d[domains == 2]  # cycle-signal
+    Z_cn = Z_2d[domains == 3]  # cycle-nuis
 
-    sig_pad, nui_pad, joint_arr = pad_to_joint(z_sig, z_nui)
-    sig2_pad, nui2_pad, joint2_arr = pad_to_joint(z_sig2, z_nui2)
+    Y_os = class_labels[domains == 0]
+    Y_on = class_labels[domains == 1]
+    Y_cs = class_labels[domains == 2]
+    Y_cn = class_labels[domains == 3]
 
-    # Stack everything for a single t-SNE run:
-    # ordering: orig_sig, orig_nui, orig_joint, cycle_sig, cycle_nui, cycle_joint
-    stacked = np.concatenate([sig_pad, nui_pad, joint_arr, sig2_pad, nui2_pad, joint2_arr], axis=0)
-    # Create labels for slicing later
-    n_each = sig_pad.shape[0]
-    slices = {
-        "orig_sig": (0, n_each),
-        "orig_nui": (n_each, 2*n_each),
-        "orig_joint": (2*n_each, 3*n_each),
-        "cycle_sig": (3*n_each, 4*n_each),
-        "cycle_nui": (4*n_each, 5*n_each),
-        "cycle_joint": (5*n_each, 6*n_each),
-    }
-
-    # Run t-SNE once
-    tsne = TSNE(n_components=2, perplexity=min(50, max(5, perplexity)), random_state=seed, init="pca", learning_rate="auto")
-    stacked_2d = tsne.fit_transform(stacked)
-
-    # Extract back
-    def slice_emb(key):
-        a,b = slices[key]
-        return stacked_2d[a:b]
-
-    orig_sig_2d = slice_emb("orig_sig")
-    orig_nui_2d = slice_emb("orig_nui")
-    orig_joint_2d = slice_emb("orig_joint")
-    cyc_sig_2d = slice_emb("cycle_sig")
-    cyc_nui_2d = slice_emb("cycle_nui")
-    cyc_joint_2d = slice_emb("cycle_joint")
-
-    # Plot 2x3 grid
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    # --- Plot ---
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     cmap = "tab10"
 
-    sc = axes[0,0].scatter(orig_sig_2d[:,0], orig_sig_2d[:,1], c=y, cmap=cmap, s=8, alpha=0.7)
-    axes[0,0].set_title(f"{title_prefix}: Original — Signal")
-    axes[0,0].set_xlabel("t-SNE dim1"); axes[0,0].set_ylabel("t-SNE dim2")
+    sc = axes[0, 0].scatter(Z_os[:, 0], Z_os[:, 1], c=Y_os, cmap=cmap, s=8, alpha=0.7)
+    axes[0, 0].set_title(f"{title_prefix}: Original — Signal")
 
-    sc = axes[0,1].scatter(orig_nui_2d[:,0], orig_nui_2d[:,1], c=y, cmap=cmap, s=8, alpha=0.7)
-    axes[0,1].set_title(f"{title_prefix}: Original — Nuisance")
-    axes[0,1].set_xlabel("t-SNE dim1"); axes[0,1].set_ylabel("t-SNE dim2")
+    axes[0, 1].scatter(Z_on[:, 0], Z_on[:, 1], c=Y_on, cmap=cmap, s=8, alpha=0.7)
+    axes[0, 1].set_title(f"{title_prefix}: Original — Nuisance")
 
-    sc = axes[0,2].scatter(orig_joint_2d[:,0], orig_joint_2d[:,1], c=y, cmap=cmap, s=8, alpha=0.7)
-    axes[0,2].set_title(f"{title_prefix}: Original — Joint")
-    axes[0,2].set_xlabel("t-SNE dim1"); axes[0,2].set_ylabel("t-SNE dim2")
+    axes[1, 0].scatter(Z_cs[:, 0], Z_cs[:, 1], c=Y_cs, cmap=cmap, s=8, alpha=0.7)
+    axes[1, 0].set_title(f"{title_prefix}: Cycle — Signal")
 
-    sc = axes[1,0].scatter(cyc_sig_2d[:,0], cyc_sig_2d[:,1], c=y, cmap=cmap, s=8, alpha=0.7)
-    axes[1,0].set_title(f"{title_prefix}: Cycle — Signal")
-    axes[1,0].set_xlabel("t-SNE dim1"); axes[1,0].set_ylabel("t-SNE dim2")
+    axes[1, 1].scatter(Z_cn[:, 0], Z_cn[:, 1], c=Y_cn, cmap=cmap, s=8, alpha=0.7)
+    axes[1, 1].set_title(f"{title_prefix}: Cycle — Nuisance")
 
-    sc = axes[1,1].scatter(cyc_nui_2d[:,0], cyc_nui_2d[:,1], c=y, cmap=cmap, s=8, alpha=0.7)
-    axes[1,1].set_title(f"{title_prefix}: Cycle — Nuisance")
-    axes[1,1].set_xlabel("t-SNE dim1"); axes[1,1].set_ylabel("t-SNE dim2")
-
-    sc = axes[1,2].scatter(cyc_joint_2d[:,0], cyc_joint_2d[:,1], c=y, cmap=cmap, s=8, alpha=0.7)
-    axes[1,2].set_title(f"{title_prefix}: Cycle — Joint")
-    axes[1,2].set_xlabel("t-SNE dim1"); axes[1,2].set_ylabel("t-SNE dim2")
-
-    # Add one colorbar / legend for class labels
-    handles, labels = axes[0,0].get_legend_handles_labels()  # not ideal; use proxy legend
+    fig.colorbar(sc, ax=axes, orientation="horizontal", fraction=0.05, pad=0.1, label="Class label")
     plt.tight_layout()
     plt.show()
+
 
 if __name__ == "__main__":
     train_ds = load_nuisanced_subset("artifacts/mnist_nuis_train.pt")
@@ -233,8 +189,8 @@ if __name__ == "__main__":
     encoder = SplitEncoder()
     encoder.load_state_dict(torch.load("artifacts/mnist_encoder_pretrain.pt"))
     decoder = SplitDecoder()
-    decoder.load_state_dict(torch.load("artifacts/finetuned_decoder_mnist.pt"))
+    decoder.load_state_dict(torch.load("artifacts/mnist_finetune/finetuned_decoder.pt"))
 
     #visualize_latents(encoder, train_loader)
     #visualize_cleaning_examples(encoder, decoder, train_ds)
-    cycle_tsne_visualization(encoder, decoder, train_ds)
+    tsne_signal_nuisance_cycle(encoder, decoder, train_ds)
