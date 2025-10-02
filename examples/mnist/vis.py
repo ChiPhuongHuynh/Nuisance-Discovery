@@ -1,9 +1,11 @@
 import torch
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
-from pretrain_contentaware import SplitDecoder, SplitEncoder
+from pretrain_contentaware import SplitDecoder, SplitEncoder, LinearProbe
 from data import load_nuisanced_subset
 import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix
 
 def visualize_latents(encoder, loader, device="cpu", n_samples=2000, seed=0):
     """
@@ -181,15 +183,52 @@ def tsne_signal_nuisance_cycle(encoder, decoder, dataset,
     plt.tight_layout()
     plt.show()
 
+def probe_acc(z, labels):
+    clf = LogisticRegression(max_iter=1000)
+    clf.fit(z, labels)
+    preds = clf.predict(z)
+    return accuracy_score(labels, preds), confusion_matrix(labels, preds)
 
 if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     train_ds = load_nuisanced_subset("artifacts/mnist_nuis_train.pt")
     train_loader = torch.utils.data.DataLoader(train_ds, batch_size=128, shuffle=True)
 
     encoder = SplitEncoder()
-    encoder.load_state_dict(torch.load("artifacts/mnist_encoder_pretrain.pt"))
+    #encoder.load_state_dict(torch.load("artifacts/mnist_encoder_pretrain.pt"))
     decoder = SplitDecoder()
-    decoder.load_state_dict(torch.load("artifacts/mnist_finetune/finetuned_decoder.pt"))
+    probe = LinearProbe()
+    ckpt = torch.load("pretrained_101.pt", map_location=device)
+    encoder.load_state_dict(ckpt["encoder"])
+    #decoder.load_state_dict(ckpt["decoder"])
+    decoder.load_state_dict(torch.load("finetuned_decoder_alt.pt"))
+    probe.load_state_dict(ckpt["probe"])
+    encoder.eval()
+    decoder.eval()
+    probe.eval()
+    """
+    zs_list, zn_list, y_list = [], [], []
+    with torch.no_grad():
+        for x, y in train_loader:
+            x = x.to(device)
+            z_s, z_n = encoder(x)
+            zs_list.append(z_s.cpu())
+            zn_list.append(z_n.cpu())
+            y_list.append(y.cpu())
+
+    z_s = torch.cat(zs_list).numpy()
+    z_n = torch.cat(zn_list).numpy()
+    labels = torch.cat(y_list).numpy()
+
+    clf_s, acc_s = probe_acc(z_s, labels)
+    clf_n, acc_n = probe_acc(z_n, labels)
+
+    print(acc_s)
+    print(acc_n)
+    """
+    #print("Probe accuracy from z_s (signal): {:.3f}".format(acc_s))
+    #print("Probe accuracy from z_n (nuisance): {:.3f}".format(acc_n))
+    #decoder.load_state_dict(torch.load("artifacts/mnist_finetune/finetuned_decoder.pt"))
 
     #visualize_latents(encoder, train_loader)
     #visualize_cleaning_examples(encoder, decoder, train_ds)

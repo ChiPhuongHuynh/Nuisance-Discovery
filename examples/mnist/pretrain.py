@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 from data import load_nuisanced_subset, SimpleMLP
 
+eps = 1e-6
+
 # ================================
 # Models
 # ================================
@@ -80,9 +82,51 @@ def get_weights(epoch, max_epochs):
         return 0.3, 0.5, 0.2
 
 
+def normalize_batch(z):
+    # zero-mean per-dim and unit-std per-dim (batch statistics)
+    zc = z - z.mean(dim=0, keepdim=True)
+    std = zc.std(dim=0, keepdim=True)
+    return zc / (std + eps)
+
+def cross_covariance_norm(z_s, z_n):
+    """
+    Frobenius norm of cross-covariance between z_s and z_n (batch normalized).
+    Returns a scalar tensor.
+    """
+    zs = z_s - z_s.mean(dim=0, keepdim=True)
+    zn = z_n - z_n.mean(dim=0, keepdim=True)
+    cov = (zs.t() @ zn) / (zs.size(0) - 1.0)
+    return torch.norm(cov)  # Frobenius
+
+def projection_penalty(z_s, z_n, ridge=1e-4):
+    """
+    Penalize projection of z_n onto span(z_s).
+    Solve linear least-squares for A: z_n ≈ z_s @ A, then penalize ||z_s @ A||^2.
+    Small ridge for numerical stability.
+    """
+    # center
+    zs = z_s - z_s.mean(dim=0, keepdim=True)     # [B, d_s]
+    zn = z_n - z_n.mean(dim=0, keepdim=True)     # [B, d_n]
+
+    # compute A = (Zs^T Zs + ridge I)^{-1} Zs^T Zn  => shape [d_s, d_n]
+    # we compute in feature space: G = Zs^T Zs + ridge*I
+    G = zs.t() @ zs                     # [d_s, d_s]
+    d_s = G.shape[0]
+    G = G + ridge * torch.eye(d_s, device=G.device)
+
+    # solve A via linear solve (more stable than inverse)
+    A = torch.linalg.solve(G, zs.t() @ zn)      # [d_s, d_n]
+
+    # projection of zn onto span(zs): zn_proj = zs @ A
+    zn_proj = zs @ A                            # [B, d_n]
+
+    # penalty = mean squared norm of the projection
+    return (zn_proj.pow(2).sum(dim=1).mean())
+
 def pretrain(encoder, decoder, probe, dataloader, teacher, device,
              lambda_cls=1.0, lambda_distill=1.0,
-             lambda_cov=0.1, lambda_rec=1.0, lambda_preserve=1.0,
+             lambda_cov=0.5, lambda_rec=0.5, lambda_preserve=1.0, lambda_proj=0.1,
+             lambda_cov_cycle=0.5, lambda_cycle_nuisance=1.0,
              epochs=20, save_path="pretrained_101.pt"):
 
     encoder.train()
@@ -120,27 +164,42 @@ def pretrain(encoder, decoder, probe, dataloader, teacher, device,
             # (2) distillation loss
             L_distill = distillation_loss(logits_student, teacher_logits)
 
-            # (3) covariance penalty
-            L_cov = covariance_penalty(z_s, z_n)
-
             # (4) reconstruction
-            x_hat = decoder(torch.cat([z_s, z_n], dim=1))
+            z_n_noisy = z_n + torch.randn_like(z_n) * 0.01
+            x_hat = decoder(torch.cat([z_s.detach(), z_n_noisy], dim=1))
             L_rec, rec_stats = conservative_reconstruction_loss(
                 x.view(x.size(0), -1), x_hat
             )
 
             # (5) signal preservation
-            z_s_p, _ = encoder(x_hat)
+            z_s_p, z_n_p = encoder(x_hat)
             L_preserve = torch.norm(z_s - z_s_p, dim=1).mean()
+            L_cycle_nuisance = torch.norm(z_n_p - z_n, dim=1).mean()
 
-            # -------------------
-            # Combine
-            # -------------------
-            loss = (lambda_cls * L_cls +
-                    lambda_distill * L_distill +
-                    lambda_cov * L_cov +
-                    lambda_rec * L_rec +
-                    lambda_preserve * L_preserve)
+            # normalize z before computing penalties (helps numerical stability)
+            z_s_norm = normalize_batch(z_s)
+            z_n_norm = normalize_batch(z_n)
+
+            # cross-cov penalty (existing idea, stronger weight)
+            L_cov = cross_covariance_norm(z_s_norm, z_n_norm)  # scalar
+
+            L_cov_cycle = covariance_penalty(z_s_p, z_n_p)
+
+
+            # orthogonal projection penalty (removes linear leakage)
+            L_proj = projection_penalty(z_s, z_n)  # note: use raw z or normalized z as you prefer
+
+            # combine into your total loss
+            loss = (
+                    lambda_cls * L_cls
+                    + lambda_distill * L_distill
+                    + lambda_rec * L_rec
+                    + lambda_preserve * L_preserve
+                    + lambda_cov * L_cov  # increase this weight
+                    + lambda_proj * L_proj  # new term; start small
+                    + lambda_cov_cycle * L_cov_cycle
+                    + lambda_cycle_nuisance * L_cycle_nuisance
+            )
 
             opt.zero_grad()
             loss.backward()
@@ -169,7 +228,7 @@ def pretrain(encoder, decoder, probe, dataloader, teacher, device,
 
 
 
-if __name__ == "main":
+if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     train_ds = load_nuisanced_subset("artifacts/mnist_nuis_train.pt")
